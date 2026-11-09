@@ -3,6 +3,7 @@
 Python 3.11+; public Binance Spot data only; never handles exchange credentials.
 """
 import argparse
+from collections import deque
 import asyncio
 import json
 import logging
@@ -50,20 +51,80 @@ class SignalBot:
         self.stop = asyncio.Event()
         self.session: aiohttp.ClientSession | None = None
         self.last_error = ""
+        self.started_epoch = time.time()
+        self.price_trails = {symbol: deque(maxlen=360) for symbol in config.symbols}
+        self.last_prices = {}  # symbol -> (wall-clock UTC seconds, public spot price)
+        self.last_market_ok = {}
+        self.delivery_success_at = None
+        self.delivery_failure_at = None
+        self.delivery_success_count = 0
+        self.delivery_failure_count = 0
 
     def dashboard_status(self):
-        now = time.monotonic()
+        now_mono = time.monotonic()
+        now_epoch = time.time()
         result = {}
-        for sym, w in self.windows.items():
-            f = w.snapshot(now)
-            t = self.technical.get(sym)
-            result[sym] = {"price": w.events[-1][1] if w.events else None,
-                           "buy_pct": round(f.buy_pct, 2) if f else None,
-                           "trades": f.trades if f else len(w.events),
-                           "trend": ("UP" if t.ema_fast > t.ema_slow else "DOWN") if t and t.fresh(now) else None,
-                           "rsi": t.rsi if t and t.fresh(now) else None}
-        return {"connected": self.connected, "symbols": result, "last_error": self.last_error,
-                "time_utc": datetime.now(timezone.utc).isoformat()}
+        for sym, window in self.windows.items():
+            flow = window.snapshot(now_mono) if self.connected else None
+            tech = self.technical.get(sym)
+            technical_fresh = bool(tech and tech.fresh(now_mono))
+            trade_age = round(now_mono - window.last_at, 1) if window.last_at else None
+            stream_fresh = bool(self.connected and trade_age is not None and trade_age <= 15)
+            market_age = round(now_mono - self.last_market_ok[sym], 1) if sym in self.last_market_ok else None
+            result[sym] = {
+                "price": window.events[-1][1] if window.events else None,
+                "buy_pct": round(flow.buy_pct, 2) if flow else None,
+                "sell_pct": round(flow.sell_pct, 2) if flow else None,
+                "trades": flow.trades if flow else len(window.events),
+                "buy_events": flow.buy_count if flow else None,
+                "sell_events": flow.sell_count if flow else None,
+                "buy_quote": round(flow.buy_quote, 2) if flow else None,
+                "sell_quote": round(flow.sell_quote, 2) if flow else None,
+                "price_change_pct": round(flow.price_change_pct, 4) if flow else None,
+                "window_covered_seconds": round(flow.window_covered_seconds, 1) if flow else None,
+                "trend": ("UP" if tech.ema_fast > tech.ema_slow else "DOWN") if technical_fresh else None,
+                "rsi": round(tech.rsi, 2) if technical_fresh else None,
+                "ema_fast": round(tech.ema_fast, 8) if technical_fresh else None,
+                "ema_slow": round(tech.ema_slow, 8) if technical_fresh else None,
+                "volume_ratio": round(tech.volume_ratio, 3) if technical_fresh else None,
+                "book_ratio": round(tech.bid_ask_ratio, 3) if technical_fresh else None,
+                "spread_bps": round(tech.spread_bps, 3) if technical_fresh else None,
+                "last_trade_age_seconds": trade_age,
+                "market_data_age_seconds": market_age,
+                "trade_fresh": stream_fresh,
+                "indicators_fresh": technical_fresh,
+                "ready": bool(stream_fresh and technical_fresh and flow),
+                "price_series": [{"time": round(ts), "price": price} for ts, price in self.price_trails[sym]],
+            }
+        ready_count = sum(int(s["ready"]) for s in result.values())
+        return {
+            "connected": self.connected,
+            "healthy": bool(self.connected and ready_count == len(self.cfg.symbols)),
+            "ready_markets": ready_count,
+            "symbols": result,
+            "last_error": self.last_error,
+            "time_utc": datetime.now(timezone.utc).isoformat(),
+            "system": {
+                "started_utc": datetime.fromtimestamp(self.started_epoch, timezone.utc).isoformat(),
+                "uptime_seconds": round(now_epoch - self.started_epoch),
+                "alert_mode": "CONSOLE" if self.cfg.console_only else "DISCORD",
+                "success_count_since_start": self.delivery_success_count,
+                "failure_count_since_start": self.delivery_failure_count,
+                "last_delivery_success_utc": datetime.fromtimestamp(self.delivery_success_at, timezone.utc).isoformat() if self.delivery_success_at else None,
+                "last_delivery_failure_utc": datetime.fromtimestamp(self.delivery_failure_at, timezone.utc).isoformat() if self.delivery_failure_at else None,
+                "dashboard_local_only": self.cfg.dashboard_host in ("127.0.0.1", "localhost", "::1"),
+                "settings": {
+                    "window_seconds": self.cfg.window_seconds,
+                    "pressure_threshold_pct": round(self.cfg.pressure_threshold * 100, 1),
+                    "min_events": self.cfg.min_trades,
+                    "confirmation_checks": self.cfg.min_confirming_factors,
+                    "consecutive_evaluations": self.cfg.confirmations,
+                    "cooldown_seconds": self.cfg.cooldown_seconds,
+                    "evaluation_seconds": self.cfg.evaluation_seconds,
+                    "minimum_volume_ratio": self.cfg.min_volume_ratio,
+                },
+            },
+        }
 
     async def _get(self, path: str, params: dict):
         assert self.session is not None
@@ -85,6 +146,7 @@ class SignalBot:
             ratio, spread = book_metrics(book)
             tick = time.monotonic()
             self.technical[symbol] = Technical(fast, slow, rsi_v, volume, ratio, spread, tick, tick, closed_ms)
+            self.last_market_ok[symbol] = tick
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError, TypeError, RuntimeError) as exc:
             self.last_error = f"Market fetch {symbol}: {exc}"
             log.warning("%s", self.last_error)
@@ -123,8 +185,15 @@ class SignalBot:
                                 symbol = str(data["s"]).upper()
                                 window = self.windows.get(symbol)
                                 if window is not None:
-                                    window.add(t=time.monotonic(), price=float(data["p"]), qty=float(data["q"]),
-                                               is_buyer_maker=bool(data["m"]), trade_id=int(data["a"]))
+                                    current_mono, current_epoch = time.monotonic(), time.time()
+                                    trade_price = float(data["p"])
+                                    accepted = window.add(t=current_mono, price=trade_price, qty=float(data["q"]),
+                                                          is_buyer_maker=bool(data["m"]), trade_id=int(data["a"]))
+                                    if accepted:
+                                        self.last_prices[symbol] = (current_epoch, trade_price)
+                                        series = self.price_trails[symbol]
+                                        if not series or current_epoch - series[-1][0] >= 5:
+                                            series.append((current_epoch, trade_price))
                             except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                                 log.debug("Ignored malformed exchange payload")
                         elif item.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
@@ -147,6 +216,9 @@ class SignalBot:
     async def evaluate_forever(self):
         while not self.stop.is_set():
             now_mono, now_epoch = time.monotonic(), time.time()
+            # Persist observed/missed price follow-through at 5/15/30/60 minutes.
+            # No future move is assumed across outages or absent live ticks.
+            self.store.update_outcomes(self.last_prices, now_epoch)
             for symbol, window in self.windows.items():
                 flow = window.snapshot(now_mono) if self.connected else None
                 tech = self.technical.get(symbol)
@@ -164,12 +236,18 @@ class SignalBot:
                 assert candidate is not None and self.session is not None
                 message = format_alert(candidate)
                 if await send_alert(self.session, self.cfg.webhook, message, self.cfg.console_only):
-                    self.gate.sent(candidate, time.time())
+                    delivered_at = time.time()
+                    self.gate.sent(candidate, delivered_at)
+                    self.delivery_success_at = delivered_at
+                    self.delivery_success_count += 1
                     log.info("SENT %s %s price=%s pressure=%.1f%% factors=%s",
                              symbol, candidate.side, candidate.flow.price,
                              candidate.flow.buy_pct if candidate.side == "BUY" else candidate.flow.sell_pct,
                              ",".join(candidate.factors))
                 else:
+                    self.delivery_failure_count += 1
+                    self.delivery_failure_at = time.time()
+                    self.last_error = "Discord alert delivery failed"
                     log.error("Signal %s %s not delivered; will NOT mark as sent", symbol, candidate.side)
             try:
                 await asyncio.wait_for(self.stop.wait(), timeout=self.cfg.evaluation_seconds)
@@ -184,7 +262,7 @@ class SignalBot:
             async with aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": "ZeusSignalBot/2.0"}) as session:
                 self.session = session
                 runner = await start_dashboard(self.cfg.dashboard_host, self.cfg.dashboard_port,
-                                               self.dashboard_status, self.store.history)
+                                               self.dashboard_status, self.store.history, self.store)
                 log.info("Dashboard: http://%s:%d", self.cfg.dashboard_host, self.cfg.dashboard_port)
                 log.info("Alerts: %s | Symbols: %s", "CONSOLE ONLY" if self.cfg.console_only else "DISCORD", ", ".join(self.cfg.symbols))
                 tasks = [asyncio.create_task(self.refresh_forever()), asyncio.create_task(self.stream_forever()), asyncio.create_task(self.evaluate_forever())]
