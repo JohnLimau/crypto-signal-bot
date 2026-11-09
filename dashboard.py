@@ -1,40 +1,134 @@
-"""Local-only lightweight dashboard; no external frontend/CDN required."""
+"""ZEUS Command Center: local-only analytics dashboard with read-only APIs."""
+import csv
+import io
+import re
+from datetime import datetime, timezone
+from pathlib import Path
 from aiohttp import web
 
-PAGE = r'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Zeus Signal Bot V2</title><style>
-:root{color-scheme:dark}*{box-sizing:border-box}body{background:#0b1220;color:#e5edf9;font:15px system-ui,Arial;margin:0}main{max-width:1100px;margin:40px auto;padding:0 20px}
-h1{font-size:28px;margin-bottom:4px}.sub{color:#94a3b8;margin-top:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin:24px 0}.card{background:#151f30;border:1px solid #2a3a51;border-radius:14px;padding:20px}.pair{font-size:20px;font-weight:700}.price{font-size:28px;margin:10px 0}.small{font-size:13px;color:#9fb0c8}.buy{color:#4ade80}.sell{color:#fb7185}.muted{color:#94a3b8}table{border-collapse:collapse;width:100%}td,th{padding:11px 8px;text-align:left;border-bottom:1px solid #304158}th{color:#9fb0c8;font-size:13px}footer{color:#94a3b8;font-size:12px;margin:20px 0}#health{font-weight:600}</style></head>
-<body><main><h1>ZEUS / SIGNAL BOT V2</h1><p class="sub">Live Binance spot research alerts. <span id="health">Connecting...</span> · Time: Malaysia (MYT)</p>
-<div id="pairs" class="grid"></div><div class="card"><h2>Alert history</h2><div style="overflow-x:auto"><table><thead><tr><th>Time (MYT)</th><th>Market</th><th>Signal</th><th>Price</th><th>Buy pressure</th><th>Confirmations</th></tr></thead><tbody id="history"></tbody></table></div></div>
-<footer>Aggregate events are not individual trades. This is not a trading system or a prediction of profitability. Dashboard binds to localhost by default.</footer></main>
-<script>
-const el=id=>document.getElementById(id);const fmt=n=>n==null?'—':Number(n).toLocaleString(undefined,{maximumFractionDigits:4});
-async function refresh(){try{const [s,h]=await Promise.all([fetch('/api/status').then(r=>r.json()),fetch('/api/history').then(r=>r.json())]);
-el('health').textContent=s.connected?'● Stream connected':'○ Stream offline / reconnecting';el('health').className=s.connected?'buy':'sell';
-el('pairs').replaceChildren();for(const [sym,p] of Object.entries(s.symbols)){const c=document.createElement('div');c.className='card';const title=document.createElement('div');title.className='pair';title.textContent=sym;const price=document.createElement('div');price.className='price';price.textContent=p.price==null?'Waiting for data':('$'+fmt(p.price));const d=document.createElement('div');d.className='small';d.textContent='Buy pressure: '+(p.buy_pct==null?'warming up':p.buy_pct.toFixed(1)+'%')+' | Events: '+p.trades+' | 1m trend: '+(p.trend||'waiting')+' | RSI: '+(p.rsi==null?'—':p.rsi.toFixed(1));c.append(title,price,d);el('pairs').append(c)}
-el('history').replaceChildren();for(const row of h){const tr=document.createElement('tr');const ts=new Date(row.time).toLocaleString('en-MY',{timeZone:'Asia/Kuala_Lumpur'});for(const value of [ts,row.symbol,row.side,fmt(row.price),row.buy_pct+'%',row.factors]){const td=document.createElement('td');td.textContent=value;if(value===row.side)td.className=row.side==='BUY'?'buy':'sell';tr.append(td)}el('history').append(tr)}
-}catch(e){el('health').textContent='Dashboard connection interrupted';el('health').className='sell'}}refresh();setInterval(refresh,5000);
-</script></body></html>'''
+ROOT = Path(__file__).resolve().parent / "dashboard_ui"
+SECURITY = {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": (
+        "default-src 'none'; script-src 'self'; style-src 'self'; "
+        "connect-src 'self'; img-src 'self' data:; font-src 'self'; "
+        "base-uri 'none'; form-action 'none'"
+    ),
+}
 
+def filters(request, status_fn, exporting=False):
+    q = request.query
+    symbol = q.get("symbol", "").strip().upper()
+    if symbol and (not re.fullmatch(r"[A-Z0-9]{5,20}", symbol) or symbol not in status_fn().get("symbols", {})):
+        raise web.HTTPBadRequest(text="Unknown symbol")
+    side = q.get("side", "").strip().upper()
+    if side not in ("", "BUY", "SELL"):
+        raise web.HTTPBadRequest(text="Invalid direction")
+    try:
+        hours, limit, offset = (int(q.get("hours", "168")),
+                                int(q.get("limit", "5000" if exporting else "40")),
+                                int(q.get("offset", "0")))
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text="Invalid numeric filter") from exc
+    if hours not in (0, 24, 72, 168, 720) or not 1 <= limit <= (5000 if exporting else 200) or not 0 <= offset <= 100000:
+        raise web.HTTPBadRequest(text="Invalid filter")
+    return symbol, side, hours, limit, offset
 
-async def start_dashboard(host: str, port: int, snapshot_fn, history_fn):
-    app = web.Application()
+def safe_csv(value):
+    text = str(value) if value is not None else ""
+    return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) else text
+
+async def start_dashboard(host: str, port: int, snapshot_fn, history_fn, store=None):
+    """No remote write operations; bind localhost or use authenticated VPN access."""
+    @web.middleware
+    async def secure_headers(request, handler):
+        try:
+            response = await handler(request)
+        except web.HTTPException as exc:
+            response = exc
+        for key, value in SECURITY.items():
+            response.headers[key] = value
+        return response
+
+    app = web.Application(middlewares=[secure_headers], client_max_size=65536)
+
     async def index(_):
-        return web.Response(text=PAGE, content_type="text/html", headers={"Cache-Control":"no-store"})
+        return web.FileResponse(ROOT / "index.html")
+
+    async def css(_):
+        return web.FileResponse(ROOT / "style.css")
+
+    async def javascript(_):
+        return web.FileResponse(ROOT / "app.js")
+
     async def status(_):
-        return web.json_response(snapshot_fn(), headers={"Cache-Control":"no-store"})
+        return web.json_response(snapshot_fn())
+
     async def history(_):
-        return web.json_response(history_fn(), headers={"Cache-Control":"no-store"})
+        return web.json_response(history_fn())  # legacy API
+
+    async def signals(request):
+        symbol, side, hours, limit, offset = filters(request, snapshot_fn)
+        if store is None:
+            items = history_fn()
+            return web.json_response({"items": items[:limit], "total": len(items)})
+        return web.json_response({
+            "items": store.history(limit=limit, symbol=symbol, side=side, hours=hours, offset=offset),
+            "total": store.count(symbol=symbol, side=side, hours=hours)
+        })
+
+    async def performance(request):
+        symbol, _side, hours, _limit, _offset = filters(request, snapshot_fn)
+        if store is None:
+            raise web.HTTPServiceUnavailable(text="Performance storage unavailable")
+        return web.json_response(store.performance(hours=hours, symbol=symbol))
+
+    async def export_csv(request):
+        symbol, side, hours, limit, offset = filters(request, snapshot_fn, exporting=True)
+        if store is None:
+            raise web.HTTPServiceUnavailable(text="History storage unavailable")
+        rows = store.history(limit=limit, symbol=symbol, side=side, hours=hours, offset=offset)
+        out = io.StringIO(newline="")
+        writer = csv.writer(out)
+        writer.writerow(["Time UTC", "Market", "Signal", "Spot price at alert",
+                         "Buy pressure %", "Aggregate events", "Factors",
+                         "5m move %", "15m move %", "30m move %", "60m move %",
+                         "5m status", "15m status", "30m status", "60m status"])
+        for item in rows:
+            values = [item.get("outcomes", {}).get(str(h), {}) for h in (5, 15, 30, 60)]
+            writer.writerow([safe_csv(item.get(k)) for k in (
+                "time", "symbol", "side", "price", "buy_pct", "trades", "factors")] +
+                [v.get("directional_move_pct") for v in values] +
+                [v.get("status", "pending") for v in values])
+        return web.Response(text=out.getvalue(), content_type="text/csv", charset="utf-8",
+                            headers={"Content-Disposition": 'attachment; filename="zeus-signal-history.csv"'})
+
+    async def health(_):
+        s = snapshot_fn()
+        healthy = bool(s.get("healthy"))
+        return web.json_response({
+            "ok": healthy, "stream_connected": bool(s.get("connected")),
+            "ready_markets": s.get("ready_markets", 0),
+            "total_markets": len(s.get("symbols", {})),
+            "time_utc": datetime.now(timezone.utc).isoformat()
+        }, status=200 if healthy else 503)
+
     app.router.add_get("/", index)
+    app.router.add_get("/assets/style.css", css)
+    app.router.add_get("/assets/app.js", javascript)
     app.router.add_get("/api/status", status)
     app.router.add_get("/api/history", history)
+    app.router.add_get("/api/signals", signals)
+    app.router.add_get("/api/performance", performance)
+    app.router.add_get("/api/export.csv", export_csv)
+    app.router.add_get("/api/health", health)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
-    site = web.TCPSite(runner, host=host, port=port)
     try:
-        await site.start()
+        await web.TCPSite(runner, host=host, port=port).start()
     except Exception:
         await runner.cleanup()
         raise

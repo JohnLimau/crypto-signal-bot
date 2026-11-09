@@ -1,10 +1,35 @@
-# Zeus Crypto Signal Bot V2
+# Zeus Crypto Signal Bot V3 — Off-White Command Center
 
 An alert-only Discord cryptocurrency signal bot using Binance **public spot market data**. No exchange API keys; no automatic buying, selling or custody.
 
 **What's new:** live Binance aggTrade feed for BTCUSDT + ETHUSDT, rolling 60-second taker volume, closed 1-minute EMA9/EMA21 + RSI14, top-20 order book liquidity, spread/volume filters, confirmation gates, restart-safe SQLite duplicate suppression, reconnection, Discord webhook retry, rotating logs, and a localhost dashboard.
 
 > **Important:** This is an unproven signal heuristic, not a profitable or backtested trading system. The signals can be wrong. “BUY pressure” means taker-side trade volume, not the number of people buying. Aggregate trade *events* are not individual orders or full trade counts. Visible order-book liquidity can vanish or be spoofed. **Do not trade real money based on this without independent validation.**
+
+## New: ZEUS Command Center (V3)
+
+Open **http://127.0.0.1:8765/** on the **same computer running the bot**.
+
+The warm off-white, responsive web app includes:
+
+- **Overview:** market readiness, saved alert counts, five-minute follow-through, process uptime.
+- **Live markets:** sampled spot-price history (last ~30 minutes), rolling taker buy/sell pressure, 1-minute EMA/RSI, 20-level book imbalance, spread, and data freshness per symbol.
+- **Follow-through:** for every saved alert, a periodic live sample at 5/15/30/60 minutes; records the *directional spot percentage move*, whether it moved positively, and labels missed samples. This is **NOT historical backtesting, a win-probability model, or realized P&L**.
+- **Research journal:** symbol/direction/period filters, pagination, CSV download with observed/missed/pending outcomes.
+- **System health:** WebSocket connectivity, per-market freshness, Discord/console send counters, last delivery times, process uptime, and current read-only settings.
+
+**How outcomes work:** a sampled live market price within 40 seconds after the horizon is used. If there isn't one because the laptop is sleeping, offline, disconnected or otherwise too late, the horizon is marked **missed** and excluded from observed-direction percentages. Existing alerts automatically appear in history, but prior follow-through can't be reconstructed from data the bot never collected. Start the upgraded bot and let it run to collect outcomes.
+
+**Important security:** this is a read-only service, but alert records and telemetry are personal information. Keep DASHBOARD_HOST=127.0.0.1 and do not port-forward it to the public Internet. To view from your main PC when the HP laptop is running the bot, use **Windows OpenSSH tunnel** or a properly authenticated private network, rather than binding the dashboard publicly:
+
+```powershell
+# From the MAIN PC, after configuring SSH access on the HP laptop:
+ssh -L 8765:127.0.0.1:8765 your_laptop_username@your_laptop_private_ip
+```
+
+Then browse http://127.0.0.1:8765/ on the main PC. (You must install/configure OpenSSH Server on the laptop; this command does not do that setup.) The bot keeps running separately on the HP laptop. Avoid exposing the dashboard via router port forwarding.
+
+**Upgrade without affecting the running laptop:** make a copy/backup of `data/signals.sqlite3` and `.env` after stopping the existing bot cleanly, install the updated code, leave your existing `.env` unchanged, reinstall Python requirements, and restart the bot. The SQLite update creates a new outcomes table without dropping existing alert records. Windows quick-launch is still `run_windows.bat`.
 
 ## Quick start (Windows)
 
