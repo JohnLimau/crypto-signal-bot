@@ -115,3 +115,33 @@ Tests are offline and deterministic. Full live data/Discord delivery requires yo
 ## Safety and limitations
 
 No leveraged/futures trading, no automated execution, no P&L claims. `.env` is gitignored. Webhook URLs are secrets: never paste them into chat, issues, commits or screenshots. Public order book is a snapshot, not a full synchronized order book, and Binance symbols may have different liquidity. This strategy has not been walk-forward tested with realistic fees, latency or slippage.
+
+
+## ZEUS Black Box V4 — decision-time audit
+
+**New V4 alerts** save a read-only decision evidence record at the moment the
+signal qualifies, attached to the existing delivered-alert row. Open the
+**Inspect** button in the Command Center's **Signal history** table to review:
+
+- Aggressive taker buy/sell quote volume, percentage and aggregate events.
+- EMA 9/21, RSI 14, candle volume ratio, top-20 bid/ask liquidity, spread.
+- Every passed/failed directional confirmation (from the *same* strategy
+  checks that decide whether to alert), mandatory filters and their thresholds.
+- Confirmation-gate configuration and a captured UTC timestamp.
+
+**No change to trading signals, no trading execution, and no confidence score.**
+The Black Box is an evidence snapshot, not a measure of signal accuracy.
+The current implementation captures *delivered signals*, not every rejected
+candidate. It records configured gate requirements, not a tick-by-tick gate audit.
+
+The SQLite `alert_evidence` table is added on startup without deleting
+previous alerts. Older V3 alerts show **Not recorded**; old evidence is never
+fabricated. Raw JSON is available via read-only
+`GET /api/signals/{alert_id}/blackbox` for saved V4 alerts.
+
+**Upgrade safely:** stop the existing bot, back up `.env` and
+`data/signals.sqlite3` (including WAL state, preferably after a clean stop),
+then deploy V4 into the existing project or a copy. Keep the existing `.env`.
+Run `python -m unittest discover -s tests -v`, start only one bot instance,
+and confirm the dashboard at `http://127.0.0.1:8765`. Leave the service bound
+to localhost and use your existing private Tailscale Serve configuration.

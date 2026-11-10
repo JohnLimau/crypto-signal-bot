@@ -13,6 +13,20 @@ class Candidate:
     factors: tuple[str, ...]
 
 
+def factor_checks(flow: Flow, tech: Technical, side: str) -> dict[str, bool]:
+    """The four directional confirmation rules shared by alerts and Black Box.
+
+    These booleans are heuristic conditions, NOT win probabilities.
+    """
+    if side not in ("BUY", "SELL"):
+        raise ValueError("Invalid signal direction")
+    return {
+        "EMA 9/21 trend": (tech.ema_fast > tech.ema_slow if side == "BUY" else tech.ema_fast < tech.ema_slow),
+        "RSI momentum": (50 <= tech.rsi <= 78 if side == "BUY" else 22 <= tech.rsi <= 50),
+        "order-book liquidity": (tech.bid_ask_ratio >= 1.07 if side == "BUY" else tech.bid_ask_ratio <= 1 / 1.07),
+        "price move": (flow.price_change_pct >= 0.025 if side == "BUY" else flow.price_change_pct <= -0.025),
+    }
+
 def evaluate(flow: Flow | None, tech: Technical | None, *, now: float,
              pressure_threshold: float = .65, min_volume_ratio: float = .65,
              min_factors: int = 2) -> Candidate | None:
@@ -28,12 +42,7 @@ def evaluate(flow: Flow | None, tech: Technical | None, *, now: float,
         return None
     if side == "SELL" and flow.price_change_pct > 0.05:
         return None
-    checks = {
-        "EMA 9/21 trend": (tech.ema_fast > tech.ema_slow if side == "BUY" else tech.ema_fast < tech.ema_slow),
-        "RSI momentum": (50 <= tech.rsi <= 78 if side == "BUY" else 22 <= tech.rsi <= 50),
-        "order-book liquidity": (tech.bid_ask_ratio >= 1.07 if side == "BUY" else tech.bid_ask_ratio <= 1 / 1.07),
-        "price move": (flow.price_change_pct >= 0.025 if side == "BUY" else flow.price_change_pct <= -0.025),
-    }
+    checks = factor_checks(flow, tech, side)
     factors = tuple(name for name, passed in checks.items() if passed)
     if len(factors) < min_factors:
         return None

@@ -18,6 +18,7 @@ from config import Config
 from engine import TradeWindow
 from indicators import Technical, candles_metrics, book_metrics
 from strategy import evaluate
+from blackbox import capture_evidence
 from state import SignalGate, StateStore
 from notifier import send_alert, format_alert
 from dashboard import start_dashboard
@@ -234,10 +235,12 @@ class SignalBot:
                 if not self.gate.eligible(symbol, candidate.side if candidate else None, now_epoch):
                     continue
                 assert candidate is not None and self.session is not None
+                # Capture BEFORE delivery; store only if the webhook/console succeeds.
+                evidence = capture_evidence(candidate, self.cfg, decision_epoch=now_epoch)
                 message = format_alert(candidate)
                 if await send_alert(self.session, self.cfg.webhook, message, self.cfg.console_only):
                     delivered_at = time.time()
-                    self.gate.sent(candidate, delivered_at)
+                    self.gate.sent(candidate, delivered_at, evidence=evidence)
                     self.delivery_success_at = delivered_at
                     self.delivery_success_count += 1
                     log.info("SENT %s %s price=%s pressure=%.1f%% factors=%s",

@@ -30,7 +30,7 @@
         <div><strong id="sidebarStatus">Connecting…</strong><small id="sidebarDetails">Waiting for live feed</small></div>
       </div>
       <p>PERSONAL / RESEARCH TERMINAL<br>SPOT DATA • ALERTS ONLY</p>
-      <span class="version">BUILD V3.0</span>
+      <span class="version">BUILD V4.0</span>
     </div>
   </aside>
 
@@ -109,7 +109,7 @@
 
     <section id="signals" class="section">
       <div class="section-head">
-        <div><p class="eyebrow">RESEARCH JOURNAL</p><h2>Signal history</h2><p class="section-sub">Only alerts successfully delivered or printed in console-only mode are recorded.</p></div>
+        <div><p class="eyebrow">RESEARCH JOURNAL</p><h2>Signal history</h2><p class="section-sub">Delivered alerts only. Inspect the decision-time evidence for new V4 signals.</p></div>
         <button class="button button-primary" id="exportBtn" type="button">↓ Export CSV</button>
       </div>
       <div class="panel history-panel">
@@ -122,8 +122,8 @@
         <div class="table-scroll">
           <table aria-label="Recorded signals"><thead><tr>
             <th>DATE / TIME (MYT)</th><th>MARKET</th><th>DIRECTION</th><th>SPOT PRICE</th>
-            <th>BUY PRESSURE</th><th>5M MOVE</th><th>15M MOVE</th><th>60M MOVE</th><th>CONFIRMATIONS</th>
-          </tr></thead><tbody id="historyBody"><tr><td colspan="9" class="table-empty">Loading signals…</td></tr></tbody></table>
+            <th>BUY PRESSURE</th><th>5M MOVE</th><th>15M MOVE</th><th>60M MOVE</th><th>CONFIRMATIONS</th><th>BLACK BOX</th>
+          </tr></thead><tbody id="historyBody"><tr><td colspan="10" class="table-empty">Loading signals…</td></tr></tbody></table>
         </div>
         <div class="table-bottom"><span id="pageCaption">Showing 0 results</span><button class="button button-quiet" type="button" id="loadMoreBtn" disabled>Load more ↓</button></div>
       </div>
@@ -154,6 +154,18 @@
     </footer>
   </main>
 </div>
+<dialog id="blackboxDialog" class="blackbox-dialog" aria-labelledby="blackboxTitle">
+  <div class="blackbox-header">
+    <div>
+      <p class="eyebrow">ZEUS / BLACK BOX V4</p>
+      <h2 id="blackboxTitle">Decision evidence</h2>
+      <p class="section-sub" id="blackboxMeta">Immutable signal snapshot</p>
+    </div>
+    <button class="button button-quiet" type="button" id="closeBlackBoxBtn" aria-label="Close Black Box">✕ Close</button>
+  </div>
+  <div id="blackboxContent" class="blackbox-content"><p class="empty-copy">Loading decision evidence…</p></div>
+  <p class="blackbox-disclaimer">Read-only evidence recorded when the alert was evaluated. Heuristic checks are not confidence percentages or proof of profitability.</p>
+</dialog>
 <div class="toast" id="toast" aria-live="polite" role="status" hidden></div>
 </body>
 </html>
