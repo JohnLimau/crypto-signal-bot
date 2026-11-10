@@ -34,6 +34,9 @@ class Config:
     data_dir: Path
     dashboard_host: str
     dashboard_port: int
+    large_trade_min_usdt: float = 100000.0
+    mtf_gate_enabled: bool = False
+    replay_retention_days: int = 14
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -67,6 +70,9 @@ class Config:
             data_dir=root,
             dashboard_host=os.getenv("DASHBOARD_HOST", "127.0.0.1"),
             dashboard_port=int(os.getenv("DASHBOARD_PORT", "8765")),
+            large_trade_min_usdt=float(os.getenv("LARGE_TRADE_MIN_USDT", "100000")),
+            mtf_gate_enabled=_env_bool("MTF_GATE_ENABLED", False),
+            replay_retention_days=int(os.getenv("REPLAY_RETENTION_DAYS", "14")),
         )
         if not (10 <= conf.window_seconds <= 300 and 0.5 < conf.pressure_threshold <= 0.95 and 1 <= conf.min_trades <= 100000):
             raise ValueError("Invalid WINDOW_SECONDS, PRESSURE_THRESHOLD, or MIN_TRADES")
@@ -76,4 +82,6 @@ class Config:
             raise ValueError("Invalid signal confirmation or volume settings")
         if not (1 <= conf.dashboard_port <= 65535 and conf.rest_url.startswith("https://") and conf.ws_base.startswith("wss://")):
             raise ValueError("Invalid endpoint or dashboard port")
+        if not (conf.large_trade_min_usdt > 0 and conf.large_trade_min_usdt < 1e12 and 1 <= conf.replay_retention_days <= 90):
+            raise ValueError("Invalid LARGE_TRADE_MIN_USDT or REPLAY_RETENTION_DAYS")
         return conf

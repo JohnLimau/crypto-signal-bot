@@ -98,6 +98,32 @@ async def start_dashboard(host: str, port: int, snapshot_fn, history_fn, store=N
             raise web.HTTPServiceUnavailable(text="Performance storage unavailable")
         return web.json_response(store.performance(hours=hours, symbol=symbol))
 
+    async def accuracy_lab(request):
+        if store is None:
+            raise web.HTTPServiceUnavailable(text="Research storage unavailable")
+        symbol, _side, hours, _limit, _offset = filters(request, snapshot_fn)
+        return web.json_response(store.accuracy_lab(symbol=symbol, hours=hours))
+
+    async def replay(request):
+        if store is None:
+            raise web.HTTPServiceUnavailable(text="Research storage unavailable")
+        symbol = request.query.get("symbol", "").upper().strip()
+        if symbol not in snapshot_fn().get("symbols", {}):
+            raise web.HTTPBadRequest(text="Select a configured market")
+        try:
+            hours = int(request.query.get("hours", "1"))
+            limit = int(request.query.get("limit", "10000"))
+            data = store.replay(symbol, hours=hours, limit=limit)
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text="Invalid replay window") from exc
+        return web.json_response(data)
+
+    async def themes_css(_):
+        return web.FileResponse(ROOT / "themes.css")
+
+    async def research_js(_):
+        return web.FileResponse(ROOT / "research.js")
+
     async def export_csv(request):
         symbol, side, hours, limit, offset = filters(request, snapshot_fn, exporting=True)
         if store is None:
@@ -131,11 +157,15 @@ async def start_dashboard(host: str, port: int, snapshot_fn, history_fn, store=N
     app.router.add_get("/", index)
     app.router.add_get("/assets/style.css", css)
     app.router.add_get("/assets/app.js", javascript)
+    app.router.add_get("/assets/themes.css", themes_css)
+    app.router.add_get("/assets/research.js", research_js)
     app.router.add_get("/api/status", status)
     app.router.add_get("/api/history", history)
     app.router.add_get("/api/signals", signals)
     app.router.add_get("/api/signals/{alert_id}/blackbox", blackbox)
     app.router.add_get("/api/performance", performance)
+    app.router.add_get("/api/research/accuracy", accuracy_lab)
+    app.router.add_get("/api/research/replay", replay)
     app.router.add_get("/api/export.csv", export_csv)
     app.router.add_get("/api/health", health)
     runner = web.AppRunner(app, access_log=None)

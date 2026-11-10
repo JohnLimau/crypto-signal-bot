@@ -16,9 +16,10 @@ import aiohttp
 
 from config import Config
 from engine import TradeWindow
-from indicators import Technical, candles_metrics, book_metrics
+from indicators import Technical, candles_metrics, book_metrics, timeframe_trend
 from strategy import evaluate
 from blackbox import capture_evidence
+from flow_lab import FlowResearch
 from state import SignalGate, StateStore
 from notifier import send_alert, format_alert
 from dashboard import start_dashboard
@@ -45,6 +46,7 @@ class SignalBot:
         self.cfg = config
         self.windows = {symbol: TradeWindow(symbol, config.window_seconds, config.min_trades) for symbol in config.symbols}
         self.metrics = {symbol: {} for symbol in config.symbols}
+        self.flow_research = {symbol: FlowResearch(symbol, config.large_trade_min_usdt) for symbol in config.symbols}
         self.technical: dict[str, Technical] = {}
         self.store = StateStore(config.data_dir / "signals.sqlite3")
         self.gate = SignalGate(self.store, config.cooldown_seconds, config.confirmations, config.neutral_windows)
@@ -73,6 +75,9 @@ class SignalBot:
             stream_fresh = bool(self.connected and trade_age is not None and trade_age <= 15)
             market_age = round(now_mono - self.last_market_ok[sym], 1) if sym in self.last_market_ok else None
             result[sym] = {
+                **self.flow_research[sym].snapshot(),
+                "trend_5m": tech.trend_5m if technical_fresh else "UNKNOWN",
+                "trend_15m": tech.trend_15m if technical_fresh else "UNKNOWN",
                 "price": window.events[-1][1] if window.events else None,
                 "buy_pct": round(flow.buy_pct, 2) if flow else None,
                 "sell_pct": round(flow.sell_pct, 2) if flow else None,
@@ -123,6 +128,9 @@ class SignalBot:
                     "cooldown_seconds": self.cfg.cooldown_seconds,
                     "evaluation_seconds": self.cfg.evaluation_seconds,
                     "minimum_volume_ratio": self.cfg.min_volume_ratio,
+                    "mtf_gate_enabled": self.cfg.mtf_gate_enabled,
+                    "large_trade_min_usdt": self.cfg.large_trade_min_usdt,
+                    "replay_retention_days": self.cfg.replay_retention_days,
                 },
             },
         }
@@ -138,15 +146,26 @@ class SignalBot:
     async def fetch_market(self, symbol: str):
         try:
             # Closed 1-minute candles; incomplete current candle excluded in indicators.py
-            candles, book = await asyncio.gather(
+            candles, book, five, fifteen = await asyncio.gather(
                 self._get("/api/v3/klines", {"symbol": symbol, "interval": "1m", "limit": 100}),
                 self._get("/api/v3/depth", {"symbol": symbol, "limit": 20}),
+                self._get("/api/v3/klines", {"symbol": symbol, "interval": "5m", "limit": 100}),
+                self._get("/api/v3/klines", {"symbol": symbol, "interval": "15m", "limit": 100}),
+                return_exceptions=True,
             )
+            # Keep V3 signal monitoring alive even when optional timeframe data fails.
+            if isinstance(candles, BaseException):
+                raise RuntimeError("1m candles unavailable") from candles
+            if isinstance(book, BaseException):
+                raise RuntimeError("depth unavailable") from book
             now_ms = int(time.time() * 1000)
             fast, slow, rsi_v, volume, closed_ms = candles_metrics(candles, now_ms)
             ratio, spread = book_metrics(book)
             tick = time.monotonic()
-            self.technical[symbol] = Technical(fast, slow, rsi_v, volume, ratio, spread, tick, tick, closed_ms)
+            trend_5m = timeframe_trend(five, now_ms) if isinstance(five, list) else "UNKNOWN"
+            trend_15m = timeframe_trend(fifteen, now_ms) if isinstance(fifteen, list) else "UNKNOWN"
+            self.technical[symbol] = Technical(fast, slow, rsi_v, volume, ratio, spread, tick, tick, closed_ms,
+                                               trend_5m, trend_15m)
             self.last_market_ok[symbol] = tick
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError, TypeError, RuntimeError) as exc:
             self.last_error = f"Market fetch {symbol}: {exc}"
@@ -172,6 +191,8 @@ class SignalBot:
                     # Do NOT combine old and new rolling windows across stream outages.
                     for window in self.windows.values():
                         window.reset()
+                    for lab in self.flow_research.values():
+                        lab.reset()
                     self.gate.reset_pending()
                     self.connected = True
                     self.last_error = ""
@@ -191,6 +212,7 @@ class SignalBot:
                                     accepted = window.add(t=current_mono, price=trade_price, qty=float(data["q"]),
                                                           is_buyer_maker=bool(data["m"]), trade_id=int(data["a"]))
                                     if accepted:
+                                        self.flow_research[symbol].on_trade(epoch=current_epoch, price=trade_price, quantity=float(data["q"]), is_buyer_maker=bool(data["m"]))
                                         self.last_prices[symbol] = (current_epoch, trade_price)
                                         series = self.price_trails[symbol]
                                         if not series or current_epoch - series[-1][0] >= 5:
@@ -220,6 +242,7 @@ class SignalBot:
             # Persist observed/missed price follow-through at 5/15/30/60 minutes.
             # No future move is assumed across outages or absent live ticks.
             self.store.update_outcomes(self.last_prices, now_epoch)
+            self.store.record_prices(self.last_prices, now_epoch, self.cfg.replay_retention_days)
             for symbol, window in self.windows.items():
                 flow = window.snapshot(now_mono) if self.connected else None
                 tech = self.technical.get(symbol)
@@ -232,6 +255,11 @@ class SignalBot:
                                      pressure_threshold=self.cfg.pressure_threshold,
                                      min_volume_ratio=self.cfg.min_volume_ratio,
                                      min_factors=self.cfg.min_confirming_factors)
+                # Context-only by default; opt-in strict gate via MTF_GATE_ENABLED=true.
+                if candidate is not None and self.cfg.mtf_gate_enabled:
+                    desired = "UP" if candidate.side == "BUY" else "DOWN"
+                    if tech.trend_5m != desired or tech.trend_15m != desired:
+                        candidate = None
                 if not self.gate.eligible(symbol, candidate.side if candidate else None, now_epoch):
                     continue
                 assert candidate is not None and self.session is not None

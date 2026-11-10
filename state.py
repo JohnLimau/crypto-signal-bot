@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import json
 import sqlite3
+from statistics import median
+from math import sqrt
 import time
 from strategy import Candidate
 
@@ -30,6 +32,11 @@ class StateStore:
             alert_id INTEGER PRIMARY KEY REFERENCES alerts(id),
             captured_at REAL NOT NULL,
             payload_json TEXT NOT NULL)""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS market_samples (
+            symbol TEXT NOT NULL, sampled_at REAL NOT NULL, price REAL NOT NULL,
+            PRIMARY KEY(symbol,sampled_at))""")
+        self.db.execute("CREATE INDEX IF NOT EXISTS idx_market_samples_time ON market_samples(sampled_at)")
+        self._last_sample_prune_at = 0.0
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_alerts_sent_at ON alerts(sent_at)")
         self.db.commit()
 
@@ -199,6 +206,93 @@ class StateStore:
                         )
                         observed_count += (status == "observed")
         return observed_count
+
+
+    def record_prices(self, latest_prices: dict, now_epoch: float,
+                      retention_days: int = 14) -> int:
+        """Record only recent received spot ticks for future honest market replay."""
+        records = [(symbol, float(tick[0]), float(tick[1]))
+                   for symbol, tick in latest_prices.items()
+                   if (0 <= now_epoch - float(tick[0]) <= 15 and float(tick[1]) > 0)]
+        with self.db:
+            self.db.executemany(
+                "INSERT OR IGNORE INTO market_samples(symbol,sampled_at,price) VALUES(?,?,?)",
+                records)
+            if now_epoch - self._last_sample_prune_at > 3600:
+                self.db.execute("DELETE FROM market_samples WHERE sampled_at < ?",
+                                (now_epoch - retention_days * 86400,))
+                self._last_sample_prune_at = now_epoch
+        return len(records)
+
+    def replay(self, symbol: str, hours: int = 1, limit: int = 10000) -> dict:
+        """Return stored live spot observations; unavailable history is never invented."""
+        if hours not in (1, 6, 24) or not 2 <= limit <= 10000:
+            raise ValueError("Invalid replay window")
+        since = time.time() - 3600 * hours
+        rows = self.db.execute(
+            """SELECT sampled_at,price FROM market_samples
+               WHERE symbol=? AND sampled_at>=?
+               ORDER BY sampled_at DESC LIMIT ?""",
+            (symbol, since, limit)).fetchall()
+        points = [{"time": r[0], "price": r[1]} for r in reversed(rows)]
+        return {"symbol": symbol, "hours": hours, "points": points,
+                "count": len(points), "source": "recorded_public_spot_ticks",
+                "sampling": "bot loop, usually 10s", "complete_history": False}
+
+    def accuracy_lab(self, symbol: str = "", hours: int = 168) -> dict:
+        """Observed direction only; explicit sample sizes and no claim of net profit."""
+        if hours not in (0, 24, 72, 168, 720):
+            raise ValueError("Invalid research window")
+        since = time.time() - hours * 3600 if hours else 0
+        clauses = ["a.sent_at >= ?"]
+        args = [since]
+        if symbol:
+            clauses.append("a.symbol = ?")
+            args.append(symbol.upper())
+        rows = self.db.execute(
+            """SELECT a.symbol,a.side,o.horizon_minutes,o.status,o.directional_move_pct
+               FROM alerts a LEFT JOIN signal_outcomes o ON a.id=o.alert_id
+               WHERE """ + " AND ".join(clauses), args).fetchall()
+        groups = {}
+        for sym, side, horizon, status, move in rows:
+            if horizon not in (5, 15, 60):
+                continue
+            for key in (("ALL", horizon), (sym, horizon), (side, horizon)):
+                group = groups.setdefault(key, {"observed": [], "missed": 0})
+                if status == "observed" and move is not None:
+                    group["observed"].append(float(move))
+                elif status == "missed":
+                    group["missed"] += 1
+        results = []
+        for (group_name, horizon), group in sorted(groups.items()):
+            moves = group["observed"]
+            n = len(moves)
+            wins = sum(x > 0 for x in moves)
+            p = wins / n if n else 0.0
+            # Wilson interval is uncertainty of the observed positive fraction,
+            # not a guarantee of future trading performance.
+            if n:
+                z = 1.96
+                denominator = 1 + z*z/n
+                centre = (p + z*z/(2*n))/denominator
+                margin = z*sqrt(p*(1-p)/n + z*z/(4*n*n))/denominator
+                bounds = [round(max(0, (centre-margin)*100), 1),
+                          round(min(100, (centre+margin)*100), 1)]
+            else:
+                bounds = None
+            results.append({
+                "group": group_name, "horizon_minutes": horizon,
+                "observed": n, "missed": group["missed"],
+                "positive": wins, "positive_pct": round(100*p, 1) if n else None,
+                "wilson_95_pct": bounds,
+                "average_move_pct": round(sum(moves)/n, 4) if n else None,
+                "median_move_pct": round(median(moves), 4) if n else None,
+                "best_pct": round(max(moves), 4) if n else None,
+                "worst_pct": round(min(moves), 4) if n else None,
+                "sample_warning": n < 30,
+            })
+        return {"hours": hours, "symbol": symbol or "ALL", "groups": results,
+                "disclaimer": "Observed post-alert spot moves, not executed P&L or verified predictive accuracy. Historical data may be missed or pending."}
 
     def close(self):
         self.db.close()

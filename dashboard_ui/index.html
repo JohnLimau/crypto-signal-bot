@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="cozy">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,7 +7,9 @@
   <meta name="description" content="Private local monitoring dashboard for Zeus crypto signal alerts.">
   <title>ZEUS / Command Center</title>
   <link rel="stylesheet" href="/assets/style.css">
+  <link rel="stylesheet" href="/assets/themes.css">
   <script src="/assets/app.js" defer></script>
+  <script src="/assets/research.js" defer></script>
 </head>
 <body>
 <div class="shell">
@@ -22,6 +24,9 @@
       <a href="#markets" class="nav-item" data-nav="markets"><span class="nav-glyph">⌁</span> Live markets</a>
       <a href="#performance" class="nav-item" data-nav="performance"><span class="nav-glyph">▥</span> Performance</a>
       <a href="#signals" class="nav-item" data-nav="signals"><span class="nav-glyph">≡</span> Signal history</a>
+      <a href="#orderflow" class="nav-item" data-nav="orderflow"><span class="nav-glyph">◉</span> Order flow</a>
+      <a href="#accuracy" class="nav-item" data-nav="accuracy"><span class="nav-glyph">▤</span> Accuracy Lab</a>
+      <a href="#replay" class="nav-item" data-nav="replay"><span class="nav-glyph">▷</span> Replay / Paper</a>
       <a href="#system" class="nav-item" data-nav="system"><span class="nav-glyph">⚙</span> System health</a>
     </nav>
     <div class="side-bottom">
@@ -38,6 +43,13 @@
     <header class="topbar">
       <div class="breadcrumb">WORKSPACE <span>/</span> <strong>COMMAND CENTER</strong></div>
       <div class="topbar-actions">
+        <label class="theme-control"><span>THEME</span><select id="themeSelector" aria-label="Color theme">
+          <option value="cozy">Cozy Brown</option>
+          <option value="vanilla">Off-White</option>
+          <option value="midnight">Midnight</option>
+          <option value="forest">Forest Dusk</option>
+          <option value="sand">Sandstone</option>
+        </select></label>
         <span class="sync-time" id="lastSync">Not synced</span>
         <span class="clock" id="myClock">MYT · --:--:--</span>
         <button class="button button-quiet" id="refreshBtn" type="button" aria-label="Refresh dashboard">↻ <span>Refresh</span></button>
@@ -126,6 +138,66 @@
           </tr></thead><tbody id="historyBody"><tr><td colspan="10" class="table-empty">Loading signals…</td></tr></tbody></table>
         </div>
         <div class="table-bottom"><span id="pageCaption">Showing 0 results</span><button class="button button-quiet" type="button" id="loadMoreBtn" disabled>Load more ↓</button></div>
+      </div>
+    </section>
+
+
+    <section id="orderflow" class="section">
+      <div class="section-head">
+        <div><p class="eyebrow">RESEARCH / AGGRESSIVE ORDER FLOW</p><h2>CVD &amp; large-trade radar</h2><p class="section-sub">Session-based aggregate trade flow, heuristic divergence, and unusually large executed trade events.</p></div>
+        <span class="pill-neutral">SESSION ONLY</span>
+      </div>
+      <div id="flowLabMarkets" class="flow-lab-grid"><p class="empty-copy">Waiting for market stream…</p></div>
+      <p class="panel-footnote">Large aggregate events are not identified wallets, confirmed whales, or trade recommendations. CVD resets after reconnects/restarts and tracks only this Binance spot feed.</p>
+    </section>
+
+    <section id="accuracy" class="section">
+      <div class="section-head">
+        <div><p class="eyebrow">EVIDENCE / FORWARD OBSERVATIONS</p><h2>Signal Accuracy Lab</h2><p class="section-sub">Directional price follow-through with sample sizes and statistical uncertainty, not a verified win rate.</p></div>
+      </div>
+      <div class="panel">
+        <div class="research-controls">
+          <label>Market<select id="accuracySymbol"><option value="">All markets</option></select></label>
+          <label>Period<select id="accuracyPeriod"><option value="24">24 hours</option><option value="72">3 days</option><option value="168" selected>7 days</option><option value="720">30 days</option><option value="0">All time</option></select></label>
+          <button class="button button-quiet" type="button" id="accuracyRefresh">↻ Refresh research</button>
+        </div>
+        <div class="table-scroll">
+          <table aria-label="Signal directional research">
+            <thead><tr><th>GROUP</th><th>HORIZON</th><th>OBSERVED</th><th>POSITIVE</th><th>AVG MOVE</th><th>MEDIAN</th><th>95% INTERVAL</th><th>MISSED</th></tr></thead>
+            <tbody id="accuracyBody"><tr><td colspan="8" class="table-empty">Collecting research…</td></tr></tbody>
+          </table>
+        </div>
+        <p class="panel-footnote">Wilson interval describes uncertainty in observed positive fractions. Small samples and market regimes limit inference; no actual execution, fees, slippage or profit is implied.</p>
+      </div>
+    </section>
+
+    <section id="replay" class="section">
+      <div class="section-head">
+        <div><p class="eyebrow">SIMULATOR / NO REAL FUNDS</p><h2>Market Replay &amp; Paper Trading</h2><p class="section-sub">Replay ZEUS's recorded spot-price samples, one observation at a time. Test virtual BUY and SELL decisions.</p></div>
+        <span class="pill-neutral">VIRTUAL ONLY</span>
+      </div>
+      <div class="panel replay-panel">
+        <div class="research-controls">
+          <label>Spot market<select id="replaySymbol"><option value="">Choose market</option></select></label>
+          <label>History<select id="replayHours"><option value="1">Last 1 hour</option><option value="6">Last 6 hours</option><option value="24">Last 24 hours</option></select></label>
+          <button class="button button-primary" id="replayLoad" type="button">Load recorded ticks</button>
+        </div>
+        <div class="replay-summary">
+          <div><small>REPLAY PRICE</small><strong id="replayPrice">—</strong></div>
+          <div><small>RECORDED TIME (MYT)</small><strong id="replayTime">—</strong></div>
+          <div><small>VIRTUAL EQUITY</small><strong id="replayEquity">$10,000</strong></div>
+          <div><small>POSITION</small><strong id="replayPosition">Flat</strong></div>
+        </div>
+        <div id="replayChart" class="replay-plot"><p class="empty-copy">Load ticks to begin your market replay. Future observations are hidden until playback reaches them.</p></div>
+        <div class="research-controls replay-actions">
+          <button class="button button-quiet" id="replayStep" type="button">Next tick →</button>
+          <button class="button button-quiet" id="replayPlay" type="button">▶ Play</button>
+          <button class="button button-primary" id="replayBuy" type="button">Paper BUY</button>
+          <button class="button button-quiet" id="replaySell" type="button">Paper SELL</button>
+          <button class="button button-quiet" id="replayReset" type="button">Reset simulation</button>
+        </div>
+        <p class="panel-footnote" id="replayNote">Starting virtual cash: $10,000. Buy uses up to 20% of available cash. Illustration assumes 0.10% fee and 0.05% slippage PER SIDE; not actual fills. Replay is sampled spot data, not full candles or order-book reconstruction. No exchange orders are ever placed.</p>
+        <div class="research-trade-log" id="replayTrades" aria-live="polite">No virtual trades yet.</div>
       </div>
     </section>
 

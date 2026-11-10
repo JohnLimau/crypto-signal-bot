@@ -47,6 +47,12 @@ def capture_evidence(candidate: Candidate, cfg, decision_epoch: float) -> dict:
             "required": "BUY: >= -0.05%; SELL: <= +0.05%",
         },
     ]
+    if getattr(cfg, "mtf_gate_enabled", False):
+        trend = "UP" if side == "BUY" else "DOWN"
+        rules.append({"name": "Optional 5m/15m EMA agreement",
+                      "passed": t.trend_5m == trend and t.trend_15m == trend,
+                      "observed": f"5m {t.trend_5m}, 15m {t.trend_15m}",
+                      "required": f"both {trend}"})
     direction_checks = [{"name": name, "passed": bool(passed)}
                         for name, passed in checks.items()]
     return {
@@ -56,7 +62,7 @@ def capture_evidence(candidate: Candidate, cfg, decision_epoch: float) -> dict:
         "symbol": candidate.symbol,
         "side": side,
         "reference_price": f.price,
-        "source": "Binance public spot aggTrade, closed 1-minute klines, top-20 depth snapshot",
+        "source": "Binance public spot aggTrade, closed 1m/5m/15m klines, top-20 depth snapshot",
         "order_flow": {
             "window_seconds": f.window_seconds,
             "covered_seconds": f.window_covered_seconds,
@@ -72,6 +78,8 @@ def capture_evidence(candidate: Candidate, cfg, decision_epoch: float) -> dict:
         "technicals": {
             "ema_9": t.ema_fast,
             "ema_21": t.ema_slow,
+            "trend_5m": t.trend_5m,
+            "trend_15m": t.trend_15m,
             "rsi_14": t.rsi,
             "volume_ratio": t.volume_ratio,
             "bid_ask_liquidity_ratio": t.bid_ask_ratio,
@@ -85,6 +93,7 @@ def capture_evidence(candidate: Candidate, cfg, decision_epoch: float) -> dict:
         "required_directional_checks": cfg.min_confirming_factors,
         "gate": {
             "eligible_at_decision": True,
+            "mtf_gate_enabled": bool(getattr(cfg, "mtf_gate_enabled", False)),
             "required_consecutive_evaluations": cfg.confirmations,
             "cooldown_seconds": cfg.cooldown_seconds,
             "neutral_evaluations_to_rearm": cfg.neutral_windows,

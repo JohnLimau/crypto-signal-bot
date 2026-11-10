@@ -42,6 +42,8 @@ class Technical:
     candle_at: float  # monotonic time REST data was fetched
     book_at: float    # monotonic time REST data was fetched
     last_closed_ms: int
+    trend_5m: str = "UNKNOWN"
+    trend_15m: str = "UNKNOWN"
 
     def fresh(self, now: float) -> bool:
         # Reject missing/old market inputs rather than trusting yesterday's indicators.
@@ -76,3 +78,12 @@ def book_metrics(book: dict) -> tuple[float, float]:
     if ask_quote <= 0:
         raise ValueError("Zero ask liquidity")
     return bid_quote / ask_quote, (ask_best - bid_best) / ((ask_best + bid_best) / 2) * 10000
+
+def timeframe_trend(rows: list, server_epoch_ms: int) -> str:
+    """Return EMA9/EMA21 direction from CLOSED candles only."""
+    closed = [row for row in rows if int(row[6]) < server_epoch_ms]
+    if len(closed) < 35:
+        return "UNKNOWN"
+    prices = [float(row[4]) for row in closed]
+    fast, slow = ema(prices, 9), ema(prices, 21)
+    return "UP" if fast > slow else "DOWN" if fast < slow else "FLAT"

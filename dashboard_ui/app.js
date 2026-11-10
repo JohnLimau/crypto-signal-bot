@@ -249,6 +249,7 @@ function renderBlackBox(data){
       evidenceRow("Window observed",fmt(f.covered_seconds,1)+"s of "+fmt(f.window_seconds,0)+"s"),
       evidenceRow("Price change in window",pct(f.price_change_pct,4,true)),
       evidenceRow("EMA 9 / EMA 21",fmt(t.ema_9,5)+" / "+fmt(t.ema_21,5)),
+      evidenceRow("5m / 15m EMA context",(t.trend_5m||"Not captured")+" / "+(t.trend_15m||"Not captured")),
       evidenceRow("RSI 14",fmt(t.rsi_14,2)),
       evidenceRow("20-level bid / ask liquidity",fmt(t.bid_ask_liquidity_ratio,3)+"×"),
       evidenceRow("Spread",fmt(t.spread_bps,3)+" bps"),
@@ -259,6 +260,7 @@ function renderBlackBox(data){
     evidenceSection("Signal gate",[
       evidenceRow("Directional checks",fmt(data.passed_directional_checks,0)+" / 4 (minimum "+fmt(data.required_directional_checks,0)+")"),
       evidenceRow("Required consecutive evaluations",fmt(g.required_consecutive_evaluations,0)),
+      evidenceRow("Strict 5m / 15m gate",g.mtf_gate_enabled?"ENABLED":"OFF (context only)"),
       evidenceRow("Cooldown setting",fmt(g.cooldown_seconds,0)+"s"),
       evidenceRow("Neutral evaluations to rearm",fmt(g.neutral_evaluations_to_rearm,0))
     ]),
