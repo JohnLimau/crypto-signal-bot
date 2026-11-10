@@ -27,8 +27,12 @@ class FlowResearch:
         buy = not is_buyer_maker
         self.cvd += quote if buy else -quote
         # A large aggregate event is not proof of a single trader or a whale.
-        baseline = median(self.recent_sizes) if len(self.recent_sizes) >= 25 else 0.0
-        threshold = max(self.large_trade_min_usdt, 12 * baseline)
+        # Computing a median for every live event is expensive. Most events are
+        # below the hard floor, so only calculate the relative threshold for
+        # events that could possibly qualify.
+        threshold = self.large_trade_min_usdt
+        if quote >= self.large_trade_min_usdt and len(self.recent_sizes) >= 25:
+            threshold = max(threshold, 12 * median(self.recent_sizes))
         if quote >= threshold:
             self.large_trades.appendleft({
                 "time": round(epoch, 3), "side": "BUY" if buy else "SELL",
