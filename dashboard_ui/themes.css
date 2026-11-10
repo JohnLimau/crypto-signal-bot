@@ -1,8 +1,8 @@
 /* ZEUS V5 theme system. Cozy Brown is default; user choice is saved locally. */
 :root[data-theme="cozy"]{
   color-scheme:dark;
-  --canvas:#302720;--panel:#45372d;--sidebar:#29211b;--ink:#f7ebd9;--deep:#fbf0dc;
-  --muted:#c7b39d;--muted2:#b29c86;--line:#635042;--line2:#564538;
+  --canvas:#413329;--panel:#574537;--sidebar:#332820;--ink:#f8ecdc;--deep:#fbefda;
+  --muted:#d2bca7;--muted2:#bca58f;--line:#78604e;--line2:#675243;
   --green:#b4d6ad;--green-soft:#334a38;--red:#f0a79a;--red-soft:#5a3732;
   --amber:#ebbd79;--amber-soft:#624e37;--shadow:0 9px 24px #1c130e22;
 }
