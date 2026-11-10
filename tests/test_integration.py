@@ -76,8 +76,12 @@ class TestPipeline(unittest.IsolatedAsyncioTestCase):
             bot = SignalBot(cfg)
             task = asyncio.create_task(bot.run())
             try:
+                # The fake webhook records the request before the sender
+                # receives HTTP 204 and commits the signal to SQLite.
+                # Wait for BOTH asynchronous events; otherwise this test
+                # races a legitimate in-flight Discord delivery.
                 for _ in range(28):
-                    if messages:
+                    if messages and bot.store.history():
                         break
                     await asyncio.sleep(.5)
                 self.assertEqual(len(messages), 1, 'expected one live simulated signal')
