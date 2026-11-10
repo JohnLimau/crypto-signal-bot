@@ -80,6 +80,18 @@ async def start_dashboard(host: str, port: int, snapshot_fn, history_fn, store=N
             "total": store.count(symbol=symbol, side=side, hours=hours)
         })
 
+    async def blackbox(request):
+        """Immutable explanation from alert creation; never infer old evidence."""
+        if store is None:
+            raise web.HTTPServiceUnavailable(text="Evidence storage unavailable")
+        raw_id = request.match_info["alert_id"]
+        if not raw_id.isdecimal() or len(raw_id) > 16 or int(raw_id) < 1:
+            raise web.HTTPBadRequest(text="Invalid alert id")
+        evidence = store.evidence(int(raw_id))
+        if evidence is None:
+            raise web.HTTPNotFound(text="Black Box not recorded for this alert")
+        return web.json_response(evidence)
+
     async def performance(request):
         symbol, _side, hours, _limit, _offset = filters(request, snapshot_fn)
         if store is None:
@@ -122,6 +134,7 @@ async def start_dashboard(host: str, port: int, snapshot_fn, history_fn, store=N
     app.router.add_get("/api/status", status)
     app.router.add_get("/api/history", history)
     app.router.add_get("/api/signals", signals)
+    app.router.add_get("/api/signals/{alert_id}/blackbox", blackbox)
     app.router.add_get("/api/performance", performance)
     app.router.add_get("/api/export.csv", export_csv)
     app.router.add_get("/api/health", health)
