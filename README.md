@@ -145,3 +145,59 @@ then deploy V4 into the existing project or a copy. Keep the existing `.env`.
 Run `python -m unittest discover -s tests -v`, start only one bot instance,
 and confirm the dashboard at `http://127.0.0.1:8765`. Leave the service bound
 to localhost and use your existing private Tailscale Serve configuration.
+
+## ZEUS V5 — Research Lab + five themes
+
+The V5 branch includes the **V4 Black Box** and these additions:
+
+- **Color modes:** Cozy Brown (warm darker-brown default), Vanilla Off-White,
+  Midnight Navy, Forest Dusk, and Sandstone. Change with the **THEME** selector
+  in the header. Preference is saved in that browser's local storage; each
+  iPhone/PC can choose independently.
+- **CVD + divergence:** running sum of aggressive executed buy quote volume
+  minus executed sell quote volume. It is *session-scoped*, resets after
+  reconnects/restarts, and is NOT a CVD for all cryptocurrency exchanges.
+  A simple 60-second opposite-direction price/CVD check is marked
+  **potential divergence** for research, not a forecast.
+- **Large-trade radar:** flags unusually large Binance aggregate trade events
+  at `max(LARGE_TRADE_MIN_USDT, 12× median recent event size)`. It does NOT
+  identify a whale's wallet, owner or order. No extra Discord spam.
+- **1m, 5m, 15m trends:** all based on completed candles and EMA9/21.
+  **MTF_GATE_ENABLED=false** by default: added context does not change
+  existing alerts. To require matching 5m + 15m direction for an alert, set
+  `MTF_GATE_ENABLED=true` in the local `.env` and restart.
+- **Accuracy Lab:** observed positive directional percentage, average/median
+  move, missed counts, sample warning, and Wilson 95% intervals by market,
+  side, and horizon. These statistics are *not* realized profit or validated
+  forward probabilities.
+- **Market Replay:** stores price observations from the running bot loop in
+  SQLite; choose 1h/6h/24h for an available configured symbol. You can only
+  replay observations recorded **after V5 started**. Up to 14 days of
+  sampled prices are retained by default; there is no fabricated backfill.
+- **Paper trading:** replay forward in the browser and simulate spot BUY/SELL
+  with starting virtual cash of $10,000, illustrative 0.10% fee and 0.05%
+  slippage per side. Virtual trades are not sent to Binance, are not stored
+  server-side, and reset when you reload the simulation.
+
+Read-only research API endpoints are `/api/research/accuracy` and
+`/api/research/replay?symbol=BTCUSDT&hours=1`.
+
+### Safely upgrading your existing HP laptop server
+
+1. **Keep the live V3/V4 folder untouched** while you test V5 in another folder.
+   Do not run both bots together on dashboard port 8765.
+2. Stop the old bot. After clean shutdown, back up the original `.env` and
+   `data/` folder containing `signals.sqlite3` to a separate location.
+3. Unzip V5. In the *innermost folder containing `bot.py`*, copy across the
+   existing `.env` and `data/` without overwriting them from a ZIP.
+4. Install Python requirements if needed. Run
+   `python -m unittest discover -s tests -v`, then `python bot.py --check`.
+   Start with `run_windows.bat` only after tests pass.
+5. Verify `http://127.0.0.1:8765` from the HP. Tailscale Serve forwarding
+   to `127.0.0.1:8765` does not need to change.
+6. **Task Scheduler:** if you run from a different inner directory, update
+   the task's Program/script Python executable and Start in folder to V5.
+   If you use a permanent `C:\\ZEUS` folder, no task path changes are needed.
+
+No orders, exchange keys, funds, or unattended purchases are involved.
+Recorded replay samples are research data, not full trade reconstruction.
