@@ -181,7 +181,7 @@ function outcomeCell(outcome){
 }
 function renderHistory(){
   const body=$("historyBody");
-  if(!state.rows.length){body.replaceChildren(node("tr"));const cell=td("No recorded signals match these filters yet.","table-empty");cell.colSpan=9;body.firstChild.append(cell);}
+  if(!state.rows.length){body.replaceChildren(node("tr"));const cell=td("No recorded signals match these filters yet.","table-empty");cell.colSpan=10;body.firstChild.append(cell);}
   else {
     const items=state.rows.map(r=>{
       const tr=node("tr");
@@ -190,6 +190,14 @@ function renderHistory(){
       tr.append(td(money(r.price)),td(pct(r.buy_pct,1)));
       tr.append(outcomeCell(r.outcomes?.["5"]),outcomeCell(r.outcomes?.["15"]),outcomeCell(r.outcomes?.["60"]));
       const factor=td();factor.append(node("span","factors",r.factors||"—"));tr.append(factor);
+      const inspection=td();
+      if(r.has_evidence){
+        const btn=node("button","button button-quiet blackbox-open","Inspect");
+        btn.type="button";btn.dataset.blackboxId=String(r.id);
+        btn.setAttribute("aria-label","Inspect Black Box for "+r.symbol+" "+r.side+" signal");
+        inspection.append(btn);
+      }else inspection.append(node("span","return-missed","Not recorded"));
+      tr.append(inspection);
       return tr;
     });
     body.replaceChildren(...items);
@@ -197,6 +205,79 @@ function renderHistory(){
   swapText("historyCount",fmt(state.total,0)+" signals");
   swapText("pageCaption","Showing "+state.rows.length+" of "+state.total+" saved signals");
   $("loadMoreBtn").disabled=state.fetchingRows || state.rows.length>=state.total;
+}
+// Evidence is rendered with textContent only: exchange data never becomes HTML.
+function evidenceRow(label,value){
+  const row=node("div","blackbox-metric");
+  row.append(node("span","",label),node("strong","",value));
+  return row;
+}
+function evidenceSection(label,rows){
+  const section=node("section","blackbox-section");
+  section.append(node("h3","",label));
+  const list=node("div","blackbox-metrics");
+  list.append(...rows);
+  section.append(list);
+  return section;
+}
+function evidenceChecks(label,checks){
+  const section=node("section","blackbox-section");
+  section.append(node("h3","",label));
+  const items=node("div","blackbox-checks");
+  for(const c of checks||[]){
+    const row=node("div","blackbox-check");
+    row.append(node("span",c.passed?"positive":"negative",c.passed?"✓ PASS":"✕ FAIL"));
+    const info=node("div");
+    info.append(node("strong","",c.name||"Unknown rule"));
+    if(c.observed!=null)info.append(node("small","", "Observed: "+c.observed));
+    if(c.required!=null)info.append(node("small","", "Required: "+c.required));
+    row.append(info);items.append(row);
+  }
+  section.append(items);
+  return section;
+}
+function renderBlackBox(data){
+  const f=data.order_flow||{},t=data.technicals||{},g=data.gate||{};
+  $("blackboxTitle").textContent=(data.symbol||"Unknown market")+" / "+(data.side||"") +" decision";
+  $("blackboxMeta").textContent=formatDate(data.captured_at_utc)+" · Recorded when the signal was evaluated";
+  $("blackboxContent").replaceChildren(
+    evidenceSection("Market snapshot",[
+      evidenceRow("Spot reference price",money(data.reference_price)),
+      evidenceRow("Aggressive buy / sell pressure",pct(f.buy_pressure_pct,2)+" / "+pct(f.sell_pressure_pct,2)),
+      evidenceRow("Aggressive buy / sell quote volume",money(f.buy_quote_usdt)+" / "+money(f.sell_quote_usdt)),
+      evidenceRow("Aggregate trade events",fmt(f.aggregate_events,0)),
+      evidenceRow("Window observed",fmt(f.covered_seconds,1)+"s of "+fmt(f.window_seconds,0)+"s"),
+      evidenceRow("Price change in window",pct(f.price_change_pct,4,true)),
+      evidenceRow("EMA 9 / EMA 21",fmt(t.ema_9,5)+" / "+fmt(t.ema_21,5)),
+      evidenceRow("RSI 14",fmt(t.rsi_14,2)),
+      evidenceRow("20-level bid / ask liquidity",fmt(t.bid_ask_liquidity_ratio,3)+"×"),
+      evidenceRow("Spread",fmt(t.spread_bps,3)+" bps"),
+      evidenceRow("Candle volume ratio",fmt(t.volume_ratio,3)+"×")
+    ]),
+    evidenceChecks("Mandatory filters",data.rules),
+    evidenceChecks("Directional confirmation checks",data.directional_checks),
+    evidenceSection("Signal gate",[
+      evidenceRow("Directional checks",fmt(data.passed_directional_checks,0)+" / 4 (minimum "+fmt(data.required_directional_checks,0)+")"),
+      evidenceRow("Required consecutive evaluations",fmt(g.required_consecutive_evaluations,0)),
+      evidenceRow("Cooldown setting",fmt(g.cooldown_seconds,0)+"s"),
+      evidenceRow("Neutral evaluations to rearm",fmt(g.neutral_evaluations_to_rearm,0))
+    ]),
+    node("p","blackbox-disclaimer",data.disclaimer||"Research evidence, not a profitability claim.")
+  );
+}
+async function openBlackBox(id){
+  const dialog=$("blackboxDialog");
+  $("blackboxTitle").textContent="Decision evidence";
+  $("blackboxMeta").textContent="Loading signal #"+id;
+  $("blackboxContent").replaceChildren(node("p","empty-copy","Loading saved decision snapshot…"));
+  if(!dialog.open)dialog.showModal();
+  try{
+    const evidence=await fetchJSON("/api/signals/"+encodeURIComponent(id)+"/blackbox");
+    if(!dialog.open)return;
+    renderBlackBox(evidence);
+  }catch(e){
+    if(dialog.open)$("blackboxContent").replaceChildren(node("p","empty-copy","Evidence unavailable: "+e.message));
+  }
 }
 function service(label,value,tone){
   const row=node("div","service-row"),left=node("span","service-name");
@@ -294,6 +375,11 @@ function bind(){
     $(id).addEventListener("change",()=>{fetchHistory();fetchPerformance();});
   }
   $("loadMoreBtn").addEventListener("click",()=>fetchHistory(true));
+  $("historyBody").addEventListener("click",event=>{
+    const button=event.target.closest("button[data-blackbox-id]");
+    if(button)openBlackBox(button.dataset.blackboxId);
+  });
+  $("closeBlackBoxBtn").addEventListener("click",()=>$("blackboxDialog").close());
   $("exportBtn").addEventListener("click",()=>{
     const url="/api/export.csv?"+filterParams(5000).toString();
     window.location.assign(url);
