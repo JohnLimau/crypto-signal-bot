@@ -10,6 +10,7 @@ from getpass import getpass
 from pathlib import Path
 from time import time
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -73,7 +74,7 @@ class LocalAuth:
                 raise ValueError("Invalid local username")
             if len(salt) != 16 or len(password_hash) != 32:
                 raise ValueError("Invalid local credential material")
-        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        except (OSError, KeyError, TypeError, ValueError, binascii.Error) as exc:
             raise RuntimeError("Invalid ZEUS local credentials. Reset on the HP laptop using --set-login.") from exc
         self.username = username
         self.salt = salt
