@@ -1,10 +1,13 @@
 """ZEUS Command Center: local-only analytics dashboard with read-only APIs."""
+import asyncio
 import csv
+from urllib.parse import urlsplit
 import io
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from aiohttp import web
+from local_auth import LocalAuth, COOKIE_NAME, SESSION_SECONDS
 
 ROOT = Path(__file__).resolve().parent / "dashboard_ui"
 SECURITY = {
@@ -12,6 +15,8 @@ SECURITY = {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
     "X-Frame-Options": "DENY",
+    "X-Permitted-Cross-Domain-Policies": "none",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
     "Content-Security-Policy": (
         "default-src 'none'; script-src 'self'; style-src 'self'; "
         "connect-src 'self'; img-src 'self' data:; font-src 'self'; "
@@ -41,8 +46,31 @@ def safe_csv(value):
     text = str(value) if value is not None else ""
     return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) else text
 
-async def start_dashboard(host: str, port: int, snapshot_fn, history_fn, store=None):
-    """No remote write operations; bind localhost or use authenticated VPN access."""
+def same_origin(request):
+    """Require a browser-originated, same-host POST to protect session actions."""
+    origin = request.headers.get("Origin")
+    if not origin or origin == "null":
+        return False
+    try:
+        parsed = urlsplit(origin)
+        return (parsed.scheme in ("https", "http") and parsed.netloc.lower() == request.host.lower()
+                and parsed.path == "" and not parsed.query and not parsed.fragment)
+    except ValueError:
+        return False
+
+
+def cookie_requires_https(request):
+    """Local loopback HTTP works; Tailscale HTTPS sessions use Secure cookies."""
+    hostname = request.host.lower().split(":")[0].strip("[]")
+    return hostname not in ("localhost", "127.0.0.1", "::1")
+
+
+async def start_dashboard(host: str, port: int, snapshot_fn, history_fn, store=None,
+                          auth: LocalAuth | None = None, *,
+                          allow_unauthenticated_test_mode: bool = False):
+    """Authenticated read-only dashboard; test bypass must be explicit."""
+    if auth is None and not allow_unauthenticated_test_mode:
+        raise RuntimeError("ZEUS dashboard requires a configured LocalAuth account")
     @web.middleware
     async def secure_headers(request, handler):
         try:
@@ -53,7 +81,75 @@ async def start_dashboard(host: str, port: int, snapshot_fn, history_fn, store=N
             response.headers[key] = value
         return response
 
-    app = web.Application(middlewares=[secure_headers], client_max_size=65536)
+    @web.middleware
+    async def require_login(request, handler):
+        if allow_unauthenticated_test_mode and auth is None:
+            return await handler(request)
+        public_get = {"/login", "/assets/login.css", "/assets/login.js"}
+        if request.method == "GET" and request.path in public_get:
+            if request.path == "/login" and auth.is_authenticated(request.cookies.get(COOKIE_NAME)):
+                raise web.HTTPFound("/")
+            return await handler(request)
+        if request.path == "/api/auth/login" and request.method == "POST":
+            return await handler(request)
+        if auth.is_authenticated(request.cookies.get(COOKIE_NAME)):
+            return await handler(request)
+        if request.path == "/" and request.method == "GET":
+            raise web.HTTPFound("/login")
+        raise web.HTTPUnauthorized(text="Authentication required")
+
+    app = web.Application(middlewares=[secure_headers, require_login], client_max_size=65536)
+
+    async def login_html(_):
+        return web.FileResponse(ROOT / "login.html")
+
+    async def login_css(_):
+        return web.FileResponse(ROOT / "login.css")
+
+    async def login_js(_):
+        return web.FileResponse(ROOT / "login.js")
+
+    async def login(request):
+        if auth is None:
+            raise web.HTTPServiceUnavailable(text="Local login not configured")
+        if not same_origin(request):
+            raise web.HTTPForbidden(text="Invalid request origin")
+        if auth.is_limited():
+            raise web.HTTPTooManyRequests(text="Too many attempts. Try again later.",
+                                          headers={"Retry-After": "600"})
+        if request.content_type != "application/json":
+            raise web.HTTPUnsupportedMediaType(text="JSON required")
+        try:
+            values = await request.json()
+            if not isinstance(values, dict):
+                raise ValueError("Expected object")
+            username = values.get("username")
+            password = values.get("password")
+        except (ValueError, TypeError):
+            raise web.HTTPBadRequest(text="Invalid JSON")
+        valid = await asyncio.to_thread(auth.verify, username, password)
+        if not valid:
+            auth.fail()
+            # Never reveal whether the user or password was incorrect.
+            raise web.HTTPUnauthorized(text="Invalid username or password")
+        auth.successful_login()
+        token = auth.issue_session()
+        response = web.json_response({"ok": True, "username": auth.username})
+        response.set_cookie(COOKIE_NAME, token, max_age=SESSION_SECONDS,
+                            httponly=True, secure=cookie_requires_https(request),
+                            samesite="Strict", path="/")
+        return response
+
+    async def logout(request):
+        if not same_origin(request):
+            raise web.HTTPForbidden(text="Invalid request origin")
+        auth.revoke(request.cookies.get(COOKIE_NAME))
+        response = web.json_response({"ok": True})
+        response.del_cookie(COOKIE_NAME, path="/")
+        return response
+
+    async def whoami(_):
+        return web.json_response({"username": auth.username, "authenticated": True})
 
     async def index(_):
         return web.FileResponse(ROOT / "index.html")
@@ -154,6 +250,12 @@ async def start_dashboard(host: str, port: int, snapshot_fn, history_fn, store=N
             "time_utc": datetime.now(timezone.utc).isoformat()
         }, status=200 if healthy else 503)
 
+    app.router.add_get("/login", login_html)
+    app.router.add_get("/assets/login.css", login_css)
+    app.router.add_get("/assets/login.js", login_js)
+    app.router.add_post("/api/auth/login", login)
+    app.router.add_post("/api/auth/logout", logout)
+    app.router.add_get("/api/auth/me", whoami)
     app.router.add_get("/", index)
     app.router.add_get("/assets/style.css", css)
     app.router.add_get("/assets/app.js", javascript)
