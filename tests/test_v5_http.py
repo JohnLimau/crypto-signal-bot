@@ -21,7 +21,8 @@ class DashboardV5SmokeTests(unittest.IsolatedAsyncioTestCase):
             sock.bind(("127.0.0.1",0))
             self.port=sock.getsockname()[1]
         self.runner=await start_dashboard("127.0.0.1",self.port,
-                                         self.market_status,self.store.history,self.store)
+                                         self.market_status,self.store.history,self.store,
+                                         allow_unauthenticated_test_mode=True)
         self.session=ClientSession()
 
     async def asyncTearDown(self):
