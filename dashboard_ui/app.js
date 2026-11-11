@@ -319,6 +319,7 @@ function renderSystem(){
 }
 async function fetchJSON(path) {
   const response=await fetch(path,{cache:"no-store",headers:{"Accept":"application/json"}});
+  if(response.status===401){window.location.replace("/login");throw new Error("Session expired");}
   if(!response.ok)throw new Error("HTTP "+response.status+" loading "+path);
   return response.json();
 }
@@ -367,6 +368,10 @@ async function refreshAll(){
   await Promise.all([fetchHistory(),fetchPerformance()]);
 }
 function bind(){
+  $("logoutBtn").addEventListener("click",async()=>{
+    try{await fetch("/api/auth/logout",{method:"POST",credentials:"same-origin",cache:"no-store"});}catch(_){/* Also clear the UI on failure */}
+    window.location.replace("/login");
+  });
   $("refreshBtn").addEventListener("click",()=>refreshAll());
   $("marketCards").addEventListener("click",event=>{
     const button=event.target.closest("[data-symbol]");
