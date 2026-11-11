@@ -98,6 +98,7 @@ async def start_dashboard(host: str, port: int, snapshot_fn, history_fn, store=N
             raise web.HTTPFound("/login")
         raise web.HTTPUnauthorized(text="Authentication required")
 
+    login_lock = asyncio.Lock()
     app = web.Application(middlewares=[secure_headers, require_login], client_max_size=65536)
 
     async def login_html(_):
@@ -114,9 +115,6 @@ async def start_dashboard(host: str, port: int, snapshot_fn, history_fn, store=N
             raise web.HTTPServiceUnavailable(text="Local login not configured")
         if not same_origin(request):
             raise web.HTTPForbidden(text="Invalid request origin")
-        if auth.is_limited():
-            raise web.HTTPTooManyRequests(text="Too many attempts. Try again later.",
-                                          headers={"Retry-After": "600"})
         if request.content_type != "application/json":
             raise web.HTTPUnsupportedMediaType(text="JSON required")
         try:
@@ -127,13 +125,18 @@ async def start_dashboard(host: str, port: int, snapshot_fn, history_fn, store=N
             password = values.get("password")
         except (ValueError, TypeError):
             raise web.HTTPBadRequest(text="Invalid JSON")
-        valid = await asyncio.to_thread(auth.verify, username, password)
-        if not valid:
-            auth.fail()
-            # Never reveal whether the user or password was incorrect.
-            raise web.HTTPUnauthorized(text="Invalid username or password")
-        auth.successful_login()
-        token = auth.issue_session()
+        # Serialize expensive password hashes and enforce the lockout before work.
+        async with login_lock:
+            if auth.is_limited():
+                raise web.HTTPTooManyRequests(text="Too many attempts. Try again later.",
+                                              headers={"Retry-After": "600"})
+            valid = await asyncio.to_thread(auth.verify, username, password)
+            if not valid:
+                auth.fail()
+                # Never reveal whether the user or password was incorrect.
+                raise web.HTTPUnauthorized(text="Invalid username or password")
+            auth.successful_login()
+            token = auth.issue_session()
         response = web.json_response({"ok": True, "username": auth.username})
         response.set_cookie(COOKIE_NAME, token, max_age=SESSION_SECONDS,
                             httponly=True, secure=cookie_requires_https(request),
