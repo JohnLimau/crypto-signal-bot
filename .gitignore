@@ -8,3 +8,8 @@ data/
 *.sqlite3*
 *.log
 .DS_Store
+
+# Defense in depth: never upload credentials even outside data/
+auth.json
+credentials.json
+*.secret
