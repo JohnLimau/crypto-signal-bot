@@ -369,8 +369,11 @@ async function refreshAll(){
 }
 function bind(){
   $("logoutBtn").addEventListener("click",async()=>{
-    try{await fetch("/api/auth/logout",{method:"POST",credentials:"same-origin",cache:"no-store"});}catch(_){/* Also clear the UI on failure */}
-    window.location.replace("/login");
+    try{
+      const response=await fetch("/api/auth/logout",{method:"POST",credentials:"same-origin",cache:"no-store"});
+      if(!response.ok)throw new Error("HTTP "+response.status);
+      window.location.replace("/login");
+    }catch(_){toast("Logout failed. Please try again.");}
   });
   $("refreshBtn").addEventListener("click",()=>refreshAll());
   $("marketCards").addEventListener("click",event=>{
