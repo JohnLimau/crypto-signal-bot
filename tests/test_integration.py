@@ -9,6 +9,7 @@ import unittest
 from aiohttp import web
 from config import Config
 from bot import SignalBot
+from local_auth import LocalAuth
 
 
 def unused_port():
@@ -73,6 +74,9 @@ class TestPipeline(unittest.IsolatedAsyncioTestCase):
                 rest_url=f'http://127.0.0.1:{port}',
                 ws_base=f'ws://127.0.0.1:{port}/stream?streams=',
                 data_dir=Path(d), dashboard_host='127.0.0.1', dashboard_port=unused_port())
+            # Integration uses a local dummy credential, never a real secret.
+            LocalAuth.write_credentials(Path(d)/"security"/"auth.json",
+                                        "testuser", "dummy-only-test-password-123")
             bot = SignalBot(cfg)
             task = asyncio.create_task(bot.run())
             try:
