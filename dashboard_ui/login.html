@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en" data-theme="cozy">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#413329">
+  <meta name="robots" content="noindex, nofollow">
+  <title>ZEUS / Secure Access</title>
+  <link rel="stylesheet" href="/assets/login.css">
+  <script src="/assets/login.js" defer></script>
+</head>
+<body>
+  <main class="access-shell">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">Z<span>.</span></span>
+      <div class="brand-label"><strong>ZEUS</strong><small>COMMAND CENTER</small></div>
+    </div>
+    <section class="login-card" aria-labelledby="heading">
+      <p class="eyebrow">PRIVATE TERMINAL / LOCAL ACCESS CONTROL</p>
+      <h1 id="heading">Welcome <em>back.</em></h1>
+      <p class="intro">Your market research, signal reports and saved data stay on your computer. Sign in to access your command center.</p>
+      <form id="loginForm" autocomplete="on">
+        <label for="username">Username</label>
+        <input id="username" name="username" required minlength="3" maxlength="32"
+          autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Your local account">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" required maxlength="256"
+          autocomplete="current-password" placeholder="Your ZEUS password">
+        <p id="loginError" class="form-error" role="alert" hidden></p>
+        <button type="submit" id="signIn">Sign in <span aria-hidden="true">→</span></button>
+      </form>
+      <p class="secure-note"><span aria-hidden="true">◇</span> Password verification runs on your ZEUS computer. No GitHub or external login service.</p>
+    </section>
+    <footer>
+      <span>ZEUS / PERSONAL RESEARCH TERMINAL</span>
+      <span>PRIVATE ACCESS · BINANCE SPOT MONITOR</span>
+    </footer>
+  </main>
+</body>
+</html>
