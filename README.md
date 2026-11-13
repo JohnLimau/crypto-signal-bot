@@ -201,3 +201,80 @@ Read-only research API endpoints are `/api/research/accuracy` and
 
 No orders, exchange keys, funds, or unattended purchases are involved.
 Recorded replay samples are research data, not full trade reconstruction.
+
+## ZEUS V5.1 — Private laptop login (no credentials on GitHub)
+
+This version adds a mandatory local account protecting **all** dashboard
+pages, assets, CSV exports, health and research APIs, and Black Box evidence.
+Only the login page and login assets are public; valid credentials are needed
+for other endpoints. **Existing Binance monitoring and Discord alerts are
+unchanged**, except startup now requires login setup.
+
+### Create your username/password ON THE HP LAPTOP (before starting)
+
+1. Stop ZEUS and make a separate backup of your existing `.env` and `data/`.
+2. Extract this branch and open a PowerShell window in the **innermost**
+   directory containing `bot.py` and the Python virtual environment.
+3. Copy your existing `.env` and `data/` into this folder.
+4. Run the local login setup from that project directory:
+
+   ```powershell
+   .\.venv\Scripts\python.exe bot.py --set-login
+   ```
+
+   If a venv doesn't exist yet, install requirements first, then use
+   `py -3 bot.py --set-login` or the Python interpreter you already use.
+   Choose your own username (3–32 ASCII letters/numbers/`_`/`-`) and
+   a password of **at least 12 characters**. The password prompt does not
+   echo your password. **Do not paste it in chat or GitHub.**
+
+5. Start ZEUS normally (`run_windows.bat`, `python bot.py`, or Task Scheduler).
+6. Open `http://127.0.0.1:8765/` on the HP or your existing Tailscale
+   **HTTPS** Serve link from another device. ZEUS redirects to `/login`.
+7. The dashboard has a **Log out** button. Sessions expire after 8 hours
+   or on bot restart.
+
+### Where does security information live?
+
+- Passwords are **never stored in plaintext**. Your local
+  `data/security/auth.json` contains a randomly salted **scrypt**
+  password hash, algorithm metadata and username. It is **ignored by Git**;
+  the code contains no real credentials or account.
+- Logged-in browser session tokens are random and HttpOnly, SameSite=Strict
+  cookies. Remote-domain cookies are marked Secure for use over Tailscale's
+  HTTPS address. The server stores **only hashed session IDs in RAM**:
+  no session secrets go to GitHub, Discord or remote databases.
+- All trading alerts/history, SQLite and research recordings still use
+  your existing local `data/` directory. Your Discord webhook remains in
+  the local `.env`; never share or commit it.
+- Re-running `python bot.py --set-login` changes the local credentials.
+  After changing them, **restart the bot** to invalidate all old sessions.
+- If login credentials are missing/corrupt, ZEUS refuses to start its
+  dashboard (fail-closed), rather than exposing the APIs without a login.
+- Failed logins are rate-limited: 5 failed attempts in a 15-minute window
+  temporarily lock login for 10 minutes. Recover locally if needed.
+
+### Security limits and remote-access rules
+
+This is a **single-user admin login**, not user registration, OAuth or
+two-factor authentication. Keep `DASHBOARD_HOST=127.0.0.1`, and use the
+authenticated **private Tailscale Serve** connection over HTTPS for remote
+access. **Do not enable Tailscale Funnel or router port-forwarding** or make
+the dashboard publicly internet-accessible; this local login is an added
+defense, not a substitute for private network security. Protect the
+Windows user account and NTFS permissions of the laptop's data directory;
+encryption at rest depends on your device settings. Tailscale identity,
+sessions and user accounts are separate from this ZEUS password.
+
+Note: ZEUS still receives **public market data from Binance** and sends
+**alerts through Discord** when configured. Those are external services;
+storing your credentials and ZEUS research database locally does not mean
+the app is completely offline.
+
+### Windows automatic startup
+
+Keep the *same* Task Scheduler configuration if you update ZEUS inside the
+same permanent directory. If the new inner project folder is different,
+change the task's **Program/script** interpreter path and **Start in** folder.
+Run the **local login setup before enabling the scheduled task**. Do not
+run two bot processes against the same database or HTTP port.

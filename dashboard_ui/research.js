@@ -23,6 +23,7 @@ const createSvg=(tag,attrs={})=>{
 };
 async function api(path){
   const r=await fetch(path,{cache:"no-store",headers:{Accept:"application/json"}});
+  if(r.status===401){window.location.replace("/login");throw new Error("Session expired");}
   if(!r.ok)throw new Error("HTTP "+r.status);
   return r.json();
 }

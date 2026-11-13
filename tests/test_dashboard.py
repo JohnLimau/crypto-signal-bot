@@ -69,7 +69,8 @@ class TestDashboardHTTP(unittest.IsolatedAsyncioTestCase):
             "system": {"uptime_seconds": 32},
         }
         self.runner = await start_dashboard("127.0.0.1", 0, lambda:self.snapshot,
-                                            self.store.history, self.store)
+                                            self.store.history, self.store,
+                                            allow_unauthenticated_test_mode=True)
         site = next(iter(self.runner.sites))
         port = site._server.sockets[0].getsockname()[1]
         self.base = f"http://127.0.0.1:{port}"

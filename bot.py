@@ -7,6 +7,8 @@ from collections import deque
 import asyncio
 import json
 import logging
+import os
+from pathlib import Path
 from logging.handlers import RotatingFileHandler
 import time
 from datetime import datetime, timezone
@@ -20,6 +22,7 @@ from indicators import Technical, candles_metrics, book_metrics, timeframe_trend
 from strategy import evaluate
 from blackbox import capture_evidence
 from flow_lab import FlowResearch
+from local_auth import LocalAuth
 from state import SignalGate, StateStore
 from notifier import send_alert, format_alert
 from dashboard import start_dashboard
@@ -292,8 +295,11 @@ class SignalBot:
             timeout = aiohttp.ClientTimeout(total=15, sock_connect=10)
             async with aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": "ZeusSignalBot/2.0"}) as session:
                 self.session = session
+                # Fail closed: no login configured means no exposed dashboard.
+                auth = LocalAuth(self.cfg.data_dir / "security" / "auth.json")
                 runner = await start_dashboard(self.cfg.dashboard_host, self.cfg.dashboard_port,
-                                               self.dashboard_status, self.store.history, self.store)
+                                               self.dashboard_status, self.store.history, self.store,
+                                               auth=auth)
                 log.info("Dashboard: http://%s:%d", self.cfg.dashboard_host, self.cfg.dashboard_port)
                 log.info("Alerts: %s | Symbols: %s", "CONSOLE ONLY" if self.cfg.console_only else "DISCORD", ", ".join(self.cfg.symbols))
                 tasks = [asyncio.create_task(self.refresh_forever()), asyncio.create_task(self.stream_forever()), asyncio.create_task(self.evaluate_forever())]
@@ -331,7 +337,16 @@ def main():
     parser = argparse.ArgumentParser(description="Zeus Crypto Signal Bot V2")
     parser.add_argument("--check", action="store_true", help="Check Binance REST connectivity and configuration")
     parser.add_argument("--test-alert", action="store_true", help="Send one clearly labelled Discord test message")
+    parser.add_argument("--set-login", action="store_true", help="Set local dashboard username/password on this HP laptop")
     args = parser.parse_args()
+    if args.set_login:
+        # Uses the same data-dir environment variable as normal bot startup.
+        data_dir = Path(os.getenv("DATA_DIR", str(Path(__file__).resolve().parent / "data"))).expanduser()
+        try:
+            LocalAuth.interactive_setup(data_dir / "security" / "auth.json")
+        except (ValueError, EOFError, KeyboardInterrupt) as exc:
+            parser.error(str(exc) if str(exc) else "Login configuration cancelled")
+        return
     try:
         conf = Config.from_env()
     except ValueError as exc:
