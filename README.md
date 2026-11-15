@@ -278,3 +278,69 @@ same permanent directory. If the new inner project folder is different,
 change the task's **Program/script** interpreter path and **Start in** folder.
 Run the **local login setup before enabling the scheduled task**. Do not
 run two bot processes against the same database or HTTP port.
+
+## ZEUS V5.2 — Smart Notifications (Discord quieter, research intact)
+
+**We separated the research signal gate from Discord notification policy.**
+
+- Every candidate that passes the existing signal/duplicate gate
+  (`COOLDOWN_SECONDS`, `CONFIRMATIONS`, `NEUTRAL_WINDOWS`) is now
+  **saved immediately**, with its Black Box snapshot and 5/15/30/60-minute
+  follow-through observations, regardless of Discord delivery.
+- Discord sends a real-time alert only if **at least 3/4 directional
+  confirmations** are true (`DISCORD_MIN_FACTORS=3`) and the last Discord
+  attempt for that **market** was at least 30 minutes ago
+  (`DISCORD_COOLDOWN_SECONDS=1800`).
+- The Discord cooldown is tracked in local SQLite and survives bot restarts.
+  Failed webhook attempts also consume the cooldown, preventing floods
+  during persistent Discord failures.
+- Signal History labels each new research signal **Sent**, **Quiet**,
+  **Failed**, or **Attempting**. CSV export appends `Discord status` and
+  `Discord reason`; previous rows migrate to **Sent**.
+- **Optional hourly digest:** set `DISCORD_SUMMARY_HOURS=1` (0 is off by
+  default) to receive a compact summary of quiet signals by market/direction.
+  The first interval starts after enabling the feature. No digest is sent
+  if there were no quiet research events in the interval.
+- The Accuracy Lab and existing performance endpoint still count **all
+  saved gated signals**, not only Discord messages. The old
+  `alerts.sent_at` column now means research signal time for new rows.
+- This is a **notification-volume** improvement, not evidence of higher
+  accuracy or profitability. Signals need independent evaluation.
+
+### Local .env settings (never commit actual credentials)
+
+```dotenv
+# Keep the research gate at 3 min if you want the previous research density.
+COOLDOWN_SECONDS=180
+
+# Separate Discord notification rules:
+DISCORD_MIN_FACTORS=3
+DISCORD_COOLDOWN_SECONDS=1800
+DISCORD_SUMMARY_HOURS=0
+```
+
+**If you previously changed `COOLDOWN_SECONDS` to `1800` to quiet Discord,
+change it back to `180` once V5.2 is installed.** The new
+`DISCORD_COOLDOWN_SECONDS` is what limits Discord; the original setting
+continues to control how frequently a research event may be saved.
+
+### Updating the HP laptop without losing data
+
+1. Stop the Task Scheduler bot and any manually running instances. Back up
+   the whole `data/` folder (especially `signals.sqlite3`) and your
+   local `.env` **after shutdown**. Keep the original folder.
+2. Extract this branch or update your permanent install path. Restore your
+   existing `.env`, `data/` (including `data/security/auth.json`),
+   and virtual environment as needed; do not replace your local secrets
+   with `.env.example`.
+3. Set the local notification values above and install requirements.
+   Run `python -m unittest discover -s tests -v` before restarting ZEUS.
+4. Restart *one* ZEUS process. Existing Tailscale HTTPS Serve, private login
+   and Task Scheduler continue to work; update Scheduler paths only when
+   the installation directory changed.
+5. Verify the Command Center **Signal History** shows new Sent/Quiet rows,
+   then confirm the CSV includes the two added Discord columns.
+
+The bot continues to consume public Binance market data and send selected
+alerts via your existing Discord webhook. Credentials and SQLite research
+records remain only on the user's HP laptop, not GitHub.
