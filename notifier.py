@@ -32,14 +32,14 @@ def format_digest(digest: dict) -> str:
     from zoneinfo import ZoneInfo
     total = sum(item["count"] for item in digest["groups"])
     end = datetime.fromtimestamp(digest["end"], ZoneInfo("Asia/Kuala_Lumpur")).strftime("%d %b %Y, %I:%M %p MYT")
-    details = "\\n".join(
+    details = "\n".join(
         f"• {item['symbol']} {item['side']}: {item['count']} research signals"
         for item in digest["groups"])
     return (
-        f"📊 **ZEUS QUIET SIGNAL SUMMARY**\\n"
-        f"{total} gated research signals were kept out of Discord.\\n"
-        f"{details}\\n"
-        f"Window ending: {end}\\n"
+        f"📊 **ZEUS QUIET SIGNAL SUMMARY**\n"
+        f"{total} gated research signals were kept out of Discord.\n"
+        f"{details}\n"
+        f"Window ending: {end}\n"
         "Stored in Command Center for research. Not a profit or accuracy claim."
     )
 
