@@ -233,13 +233,15 @@ async def start_dashboard(host: str, port: int, snapshot_fn, history_fn, store=N
         writer.writerow(["Time UTC", "Market", "Signal", "Spot price at alert",
                          "Buy pressure %", "Aggregate events", "Factors",
                          "5m move %", "15m move %", "30m move %", "60m move %",
-                         "5m status", "15m status", "30m status", "60m status"])
+                         "5m status", "15m status", "30m status", "60m status",
+                         "Discord status", "Discord reason"])
         for item in rows:
             values = [item.get("outcomes", {}).get(str(h), {}) for h in (5, 15, 30, 60)]
             writer.writerow([safe_csv(item.get(k)) for k in (
                 "time", "symbol", "side", "price", "buy_pct", "trades", "factors")] +
                 [v.get("directional_move_pct") for v in values] +
-                [v.get("status", "pending") for v in values])
+                [v.get("status", "pending") for v in values] +
+                [safe_csv(item.get("discord_status")), safe_csv(item.get("discord_reason"))])
         return web.Response(text=out.getvalue(), content_type="text/csv", charset="utf-8",
                             headers={"Content-Disposition": 'attachment; filename="zeus-signal-history.csv"'})
 
