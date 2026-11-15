@@ -24,7 +24,7 @@ from blackbox import capture_evidence
 from flow_lab import FlowResearch
 from local_auth import LocalAuth
 from state import SignalGate, StateStore
-from notifier import send_alert, format_alert
+from notifier import send_alert, format_alert, format_digest
 from dashboard import start_dashboard
 
 log = logging.getLogger("signalbot")
@@ -65,6 +65,8 @@ class SignalBot:
         self.delivery_failure_at = None
         self.delivery_success_count = 0
         self.delivery_failure_count = 0
+        self.research_recorded_since_start = 0
+        self.discord_quiet_since_start = 0
 
     def dashboard_status(self):
         now_mono = time.monotonic()
@@ -119,6 +121,8 @@ class SignalBot:
                 "alert_mode": "CONSOLE" if self.cfg.console_only else "DISCORD",
                 "success_count_since_start": self.delivery_success_count,
                 "failure_count_since_start": self.delivery_failure_count,
+                "research_signals_since_start": self.research_recorded_since_start,
+                "discord_quiet_since_start": self.discord_quiet_since_start,
                 "last_delivery_success_utc": datetime.fromtimestamp(self.delivery_success_at, timezone.utc).isoformat() if self.delivery_success_at else None,
                 "last_delivery_failure_utc": datetime.fromtimestamp(self.delivery_failure_at, timezone.utc).isoformat() if self.delivery_failure_at else None,
                 "dashboard_local_only": self.cfg.dashboard_host in ("127.0.0.1", "localhost", "::1"),
@@ -134,6 +138,9 @@ class SignalBot:
                     "mtf_gate_enabled": self.cfg.mtf_gate_enabled,
                     "large_trade_min_usdt": self.cfg.large_trade_min_usdt,
                     "replay_retention_days": self.cfg.replay_retention_days,
+                    "discord_cooldown_seconds": self.cfg.discord_cooldown_seconds,
+                    "discord_min_factors": self.cfg.discord_min_factors,
+                    "discord_summary_hours": self.cfg.discord_summary_hours,
                 },
             },
         }
@@ -266,23 +273,56 @@ class SignalBot:
                 if not self.gate.eligible(symbol, candidate.side if candidate else None, now_epoch):
                     continue
                 assert candidate is not None and self.session is not None
-                # Capture BEFORE delivery; store only if the webhook/console succeeds.
+                # Each existing qualified/gated research event is recorded locally
+                # whether or not we choose to notify Discord.
                 evidence = capture_evidence(candidate, self.cfg, decision_epoch=now_epoch)
+                enough_checks = len(candidate.factors) >= self.cfg.discord_min_factors
+                cooldown_ok = self.store.discord_cooldown_ok(
+                    symbol, now_epoch, self.cfg.discord_cooldown_seconds)
+                send_to_discord = enough_checks and cooldown_ok
+                reason = ("Eligible for Discord" if send_to_discord
+                          else "Below Discord confirmation threshold" if not enough_checks
+                          else "Discord cooldown active")
+                alert_id = self.gate.record(candidate, now_epoch, evidence, reason)
+                self.research_recorded_since_start += 1
+                if not send_to_discord:
+                    self.discord_quiet_since_start += 1
+                    log.info("RESEARCH ONLY %s %s factors=%s reason=%s",
+                             symbol, candidate.side, len(candidate.factors), reason)
+                    continue
+                # Claim cooldown BEFORE sending so failed webhooks or restarts
+                # cannot trigger a flood. The research row already exists.
+                self.store.begin_discord_attempt(alert_id, symbol, time.time())
                 message = format_alert(candidate)
-                if await send_alert(self.session, self.cfg.webhook, message, self.cfg.console_only):
+                delivered = await send_alert(
+                    self.session, self.cfg.webhook, message, self.cfg.console_only)
+                self.store.finish_discord_attempt(alert_id, delivered)
+                if delivered:
                     delivered_at = time.time()
-                    self.gate.sent(candidate, delivered_at, evidence=evidence)
                     self.delivery_success_at = delivered_at
                     self.delivery_success_count += 1
-                    log.info("SENT %s %s price=%s pressure=%.1f%% factors=%s",
-                             symbol, candidate.side, candidate.flow.price,
-                             candidate.flow.buy_pct if candidate.side == "BUY" else candidate.flow.sell_pct,
-                             ",".join(candidate.factors))
+                    log.info("SENT %s %s factors=%s", symbol, candidate.side,
+                             len(candidate.factors))
                 else:
                     self.delivery_failure_count += 1
                     self.delivery_failure_at = time.time()
-                    self.last_error = "Discord alert delivery failed"
-                    log.error("Signal %s %s not delivered; will NOT mark as sent", symbol, candidate.side)
+                    self.last_error = "Discord alert delivery failed; research event saved"
+                    log.error("Discord delivery failed for saved signal #%s", alert_id)
+
+            # Optional single digest at a user-chosen cadence. Off by default.
+            if self.cfg.discord_summary_hours:
+                digest = self.store.claim_quiet_digest(
+                    time.time(), self.cfg.discord_summary_hours)
+                if digest is not None and self.session is not None:
+                    digest_ok = await send_alert(
+                        self.session, self.cfg.webhook, format_digest(digest),
+                        self.cfg.console_only)
+                    if digest_ok:
+                        self.delivery_success_count += 1
+                        self.delivery_success_at = time.time()
+                    else:
+                        self.delivery_failure_count += 1
+                        self.delivery_failure_at = time.time()
             try:
                 await asyncio.wait_for(self.stop.wait(), timeout=self.cfg.evaluation_seconds)
             except asyncio.TimeoutError:

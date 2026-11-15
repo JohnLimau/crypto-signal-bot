@@ -37,6 +37,16 @@ class StateStore:
             PRIMARY KEY(symbol,sampled_at))""")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_market_samples_time ON market_samples(sampled_at)")
         self._last_sample_prune_at = 0.0
+        # Add columns in-place: V5.1 rows are known Discord-delivered records.
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(alerts)")}
+        if "discord_status" not in columns:
+            self.db.execute("ALTER TABLE alerts ADD COLUMN discord_status TEXT NOT NULL DEFAULT 'delivered'")
+        if "discord_reason" not in columns:
+            self.db.execute("ALTER TABLE alerts ADD COLUMN discord_reason TEXT NOT NULL DEFAULT 'Legacy delivered alert'")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS discord_notification_limits (
+            symbol TEXT PRIMARY KEY, last_attempt_at REAL NOT NULL)""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS discord_digest_state (
+            id INTEGER PRIMARY KEY CHECK(id=1), last_claim_at REAL NOT NULL)""")
         self.db.execute("CREATE INDEX IF NOT EXISTS idx_alerts_sent_at ON alerts(sent_at)")
         self.db.commit()
 
@@ -62,6 +72,111 @@ class StateStore:
             self.db.execute("INSERT OR REPLACE INTO gates VALUES(?,?,?,0)",
                             (candidate.symbol, candidate.side, timestamp))
 
+    def record_candidate(self, candidate: Candidate, timestamp: float,
+                         evidence: dict, reason: str) -> int:
+        """Persist every gated research event BEFORE deciding Discord delivery.
+
+        Writing the research row and duplicate gate in the same transaction means
+        a rejected or throttled Discord notification never deletes research.
+        Existing V5 rows keep their original delivered status.
+        """
+        f = candidate.flow
+        with self.db:
+            cur = self.db.execute(
+                """INSERT INTO alerts(symbol,side,sent_at,price,buy_pct,trades,factors,
+                                      discord_status,discord_reason)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (candidate.symbol, candidate.side, timestamp, f.price, f.buy_pct,
+                 f.trades, ", ".join(candidate.factors), "quiet", reason))
+            self.db.execute(
+                "INSERT INTO alert_evidence(alert_id,captured_at,payload_json) VALUES(?,?,?)",
+                (cur.lastrowid, float(evidence["captured_at_epoch"]),
+                 json.dumps(evidence, allow_nan=False, separators=(",", ":"), sort_keys=True)))
+            self.db.execute("INSERT OR REPLACE INTO gates VALUES(?,?,?,0)",
+                            (candidate.symbol, candidate.side, timestamp))
+        return int(cur.lastrowid)
+
+    def discord_cooldown_ok(self, symbol: str, now: float, cooldown_seconds: int) -> bool:
+        """Throttle attempts, including failures, and respect pre-upgrade alerts."""
+        if cooldown_seconds <= 0:
+            return True
+        row = self.db.execute(
+            """SELECT MAX(last_at) FROM (
+                 SELECT last_attempt_at AS last_at FROM discord_notification_limits WHERE symbol=?
+                 UNION ALL
+                 SELECT MAX(sent_at) AS last_at FROM alerts
+                 WHERE symbol=? AND discord_status='delivered')""",
+            (symbol, symbol)).fetchone()
+        return not row or row[0] is None or now - float(row[0]) >= cooldown_seconds
+
+    def begin_discord_attempt(self, alert_id: int, symbol: str, timestamp: float):
+        """Claim the cooldown before the external webhook request (restart-safe)."""
+        with self.db:
+            row = self.db.execute(
+                "SELECT symbol,discord_status FROM alerts WHERE id=?", (alert_id,)).fetchone()
+            if row != (symbol, "quiet"):
+                raise ValueError("Cannot send notification for this research event")
+            self.db.execute(
+                "UPDATE alerts SET discord_status='attempting',discord_reason='Webhook attempt' WHERE id=?",
+                (alert_id,))
+            self.db.execute(
+                "INSERT OR REPLACE INTO discord_notification_limits(symbol,last_attempt_at) VALUES(?,?)",
+                (symbol, timestamp))
+
+    def finish_discord_attempt(self, alert_id: int, delivered: bool):
+        """Set a truthful final delivery status without rewriting research."""
+        with self.db:
+            self.db.execute(
+                """UPDATE alerts SET discord_status=?, discord_reason=?
+                   WHERE id=? AND discord_status='attempting'""",
+                ("delivered" if delivered else "failed",
+                 "Discord/console confirmed" if delivered else "Webhook returned failure",
+                 alert_id))
+
+    def discord_counts(self, hours: int = 168, symbol: str = "") -> dict:
+        clauses, args = [], []
+        if hours:
+            clauses.append("sent_at >= ?")
+            args.append(time.time() - hours * 3600)
+        if symbol:
+            clauses.append("symbol = ?")
+            args.append(symbol.upper())
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        rows = self.db.execute(
+            "SELECT discord_status,COUNT(*) FROM alerts" + where +
+            " GROUP BY discord_status", args).fetchall()
+        return {k: v for k, v in rows}
+
+    def claim_quiet_digest(self, now: float, interval_hours: int) -> dict | None:
+        """Optional summary; initialize window on first call, persist schedule.
+
+        Claiming before delivery avoids repeated summaries after restarts. A
+        failed webhook can miss a digest, but cannot spam it continuously.
+        """
+        if not interval_hours:
+            return None
+        with self.db:
+            row = self.db.execute(
+                "SELECT last_claim_at FROM discord_digest_state WHERE id=1").fetchone()
+            if row is None:
+                self.db.execute(
+                    "INSERT INTO discord_digest_state(id,last_claim_at) VALUES(1,?)", (now,))
+                return None
+            since = float(row[0])
+            if now - since < interval_hours * 3600:
+                return None
+            rows = self.db.execute(
+                """SELECT symbol,side,COUNT(*) FROM alerts
+                   WHERE sent_at > ? AND sent_at <= ? AND discord_status='quiet'
+                   GROUP BY symbol,side ORDER BY symbol,side""",
+                (since, now)).fetchall()
+            self.db.execute(
+                "UPDATE discord_digest_state SET last_claim_at=? WHERE id=1", (now,))
+        return {"start": since, "end": now, "groups": [
+            {"symbol": sym, "side": side, "count": count}
+            for sym, side, count in rows
+        ]} if rows else None
+
     def evidence(self, alert_id: int) -> dict | None:
         """Return a stored decision snapshot, never recompute using current prices."""
         if type(alert_id) is not int or alert_id < 1:
@@ -73,7 +188,7 @@ class StateStore:
     HORIZONS = (5, 15, 30, 60)
 
     def history(self, limit: int = 50, symbol: str = "", side: str = "", hours: int = 0, offset: int = 0):
-        """Return saved delivered alerts with observed post-signal spot moves."""
+        """Return gated research signals and previous delivered alerts with outcomes."""
         filters, args = [], []
         if symbol:
             filters.append("symbol = ?")
@@ -88,7 +203,7 @@ class StateStore:
         limit = min(5000, max(1, int(limit)))
         offset = min(1_000_000, max(0, int(offset)))
         rows = self.db.execute(
-            "SELECT id,symbol,side,sent_at,price,buy_pct,trades,factors,EXISTS(SELECT 1 FROM alert_evidence e WHERE e.alert_id=alerts.id) FROM alerts" +
+            "SELECT id,symbol,side,sent_at,price,buy_pct,trades,factors,EXISTS(SELECT 1 FROM alert_evidence e WHERE e.alert_id=alerts.id),discord_status,discord_reason FROM alerts" +
             where + " ORDER BY id DESC LIMIT ? OFFSET ?", (*args, limit, offset)
         ).fetchall()
         if not rows:
@@ -108,7 +223,8 @@ class StateStore:
         return [{"id": r[0], "symbol": r[1], "side": r[2],
                  "time": datetime.fromtimestamp(r[3], timezone.utc).isoformat(),
                  "price": r[4], "buy_pct": round(r[5], 1),
-                 "trades": r[6], "factors": r[7], "has_evidence": bool(r[8]), "outcomes": result[r[0]]}
+                 "trades": r[6], "factors": r[7], "has_evidence": bool(r[8]),
+                 "discord_status": r[9], "discord_reason": r[10], "outcomes": result[r[0]]}
                 for r in rows]
 
     def count(self, symbol: str = "", side: str = "", hours: int = 0) -> int:
@@ -167,7 +283,8 @@ class StateStore:
                 "alert_count": self.count(symbol=symbol, hours=hours),
                 "buy_count": self.count(symbol=symbol, side="BUY", hours=hours),
                 "sell_count": self.count(symbol=symbol, side="SELL", hours=hours),
-                "last_alert": self.last_alert(), "horizons": horizons}
+                "last_alert": self.last_alert(), "discord_counts": self.discord_counts(hours=hours, symbol=symbol),
+                "horizons": horizons}
 
     def update_outcomes(self, latest_prices: dict, now_epoch: float | None = None, max_lag_s: int = 40):
         """Sample the next available live price near each horizon. Do not fabricate missed prices.
@@ -329,6 +446,13 @@ class SignalGate:
         last_side, last_time, armed = self.store.gate(symbol)
         return (count >= self.confirmations and now_epoch - last_time >= self.cooldown_seconds
                 and (bool(armed) or side != last_side))
+
+    def record(self, candidate: Candidate, now_epoch: float,
+               evidence: dict, reason: str) -> int:
+        """Record gated signal independently of Discord, then reset pending."""
+        alert_id = self.store.record_candidate(candidate, now_epoch, evidence, reason)
+        self.pending[candidate.symbol] = ("", 0)
+        return alert_id
 
     def sent(self, candidate: Candidate, now_epoch: float, evidence: dict | None = None):
         self.store.mark_sent(candidate, now_epoch, evidence=evidence)

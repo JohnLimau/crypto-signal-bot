@@ -152,7 +152,10 @@ function renderPerformance() {
   if(!perf)return;
   const first=perf.horizons?.["5"]||{};
   swapText("kpiSignals",fmt(perf.alert_count,0));
-  swapText("kpiSignalsHint",fmt(perf.buy_count,0)+" BUY / "+fmt(perf.sell_count,0)+" SELL in selected period");
+  const dc=perf.discord_counts||{};
+  swapText("kpiSignalsHint",
+    fmt(perf.buy_count,0)+" BUY / "+fmt(perf.sell_count,0)+" SELL · "+
+    fmt(dc.delivered||0,0)+" Discord sent / "+fmt(dc.quiet||0,0)+" quiet");
   swapText("kpiRate",first.positive_rate_pct==null?"—":pct(first.positive_rate_pct,1));
   swapText("kpiRateHint",first.observed ? first.positive+" positive out of "+first.observed+" observed" : "No measured 5m outcomes");
   swapText("perfSample",perf.alert_count+" saved alerts in selected period");
@@ -181,7 +184,7 @@ function outcomeCell(outcome){
 }
 function renderHistory(){
   const body=$("historyBody");
-  if(!state.rows.length){body.replaceChildren(node("tr"));const cell=td("No recorded signals match these filters yet.","table-empty");cell.colSpan=10;body.firstChild.append(cell);}
+  if(!state.rows.length){body.replaceChildren(node("tr"));const cell=td("No recorded signals match these filters yet.","table-empty");cell.colSpan=11;body.firstChild.append(cell);}
   else {
     const items=state.rows.map(r=>{
       const tr=node("tr");
@@ -190,6 +193,13 @@ function renderHistory(){
       tr.append(td(money(r.price)),td(pct(r.buy_pct,1)));
       tr.append(outcomeCell(r.outcomes?.["5"]),outcomeCell(r.outcomes?.["15"]),outcomeCell(r.outcomes?.["60"]));
       const factor=td();factor.append(node("span","factors",r.factors||"—"));tr.append(factor);
+      const notification=td();
+      const status=r.discord_status||"delivered";
+      const names={delivered:"Sent",quiet:"Quiet",failed:"Failed",attempting:"Attempting"};
+      const tone={delivered:"positive",quiet:"neutral",failed:"negative",attempting:"neutral"};
+      const badge=node("span",tone[status]||"neutral",names[status]||status);
+      badge.title=r.discord_reason||"";
+      notification.append(badge);tr.append(notification);
       const inspection=td();
       if(r.has_evidence){
         const btn=node("button","button button-quiet blackbox-open","Inspect");
@@ -293,7 +303,9 @@ function renderSystem(){
   const services=[
     service("Exchange WebSocket",s.connected?"CONNECTED":"DISCONNECTED",s.connected?"good":"bad"),
     service("Ready signal markets",(s.ready_markets||0)+" / "+Object.keys(sym).length,s.healthy?"good":"warn"),
-    service("Discord/console delivered (this run)",fmt(sys.success_count_since_start,0),"good"),
+    service("Research signals (this run)",fmt(sys.research_signals_since_start,0),"good"),
+    service("Quiet signals (this run)",fmt(sys.discord_quiet_since_start,0),"muted"),
+    service("Discord/console messages (this run)",fmt(sys.success_count_since_start,0),"good"),
     service("Discord failures (this run)",fmt(sys.failure_count_since_start,0),sys.failure_count_since_start?"bad":"muted"),
     service("Last delivery",formatDate(sys.last_delivery_success_utc),sys.last_delivery_success_utc?"good":"muted"),
     service("Recent delivery failure",formatDate(sys.last_delivery_failure_utc),sys.last_delivery_failure_utc?"bad":"muted")
@@ -311,7 +323,10 @@ function renderSystem(){
     setting("Minimum aggregate events",fmt(c.min_events,0)),
     setting("Additional checks",c.confirmation_checks==null?"—":c.confirmation_checks+" of 4"),
     setting("Consecutive evaluations",fmt(c.consecutive_evaluations,0)),
-    setting("Signal cooldown",c.cooldown_seconds==null?"—":c.cooldown_seconds+" seconds"),
+    setting("Research gate cooldown",c.cooldown_seconds==null?"—":c.cooldown_seconds+" seconds"),
+    setting("Discord cooldown per market",c.discord_cooldown_seconds==null?"—":c.discord_cooldown_seconds+" seconds"),
+    setting("Discord minimum confirmations",c.discord_min_factors==null?"—":c.discord_min_factors+" of 4"),
+    setting("Quiet digest",!c.discord_summary_hours?"DISABLED":c.discord_summary_hours+" hour(s)"),
     setting("Evaluation interval",c.evaluation_seconds==null?"—":c.evaluation_seconds+" seconds"),
     setting("Minimum candle volume ratio",c.minimum_volume_ratio==null?"—":fmt(c.minimum_volume_ratio,2)+"×"),
     setting("Dashboard access",sys.dashboard_local_only?"LOCALHOST ONLY":"CUSTOM HOST — SECURE IT")

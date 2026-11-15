@@ -37,6 +37,9 @@ class Config:
     large_trade_min_usdt: float = 100000.0
     mtf_gate_enabled: bool = False
     replay_retention_days: int = 14
+    discord_cooldown_seconds: int = 1800
+    discord_min_factors: int = 3
+    discord_summary_hours: int = 0
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -73,6 +76,9 @@ class Config:
             large_trade_min_usdt=float(os.getenv("LARGE_TRADE_MIN_USDT", "100000")),
             mtf_gate_enabled=_env_bool("MTF_GATE_ENABLED", False),
             replay_retention_days=int(os.getenv("REPLAY_RETENTION_DAYS", "14")),
+            discord_cooldown_seconds=int(os.getenv("DISCORD_COOLDOWN_SECONDS", "1800")),
+            discord_min_factors=int(os.getenv("DISCORD_MIN_FACTORS", "3")),
+            discord_summary_hours=int(os.getenv("DISCORD_SUMMARY_HOURS", "0")),
         )
         if not (10 <= conf.window_seconds <= 300 and 0.5 < conf.pressure_threshold <= 0.95 and 1 <= conf.min_trades <= 100000):
             raise ValueError("Invalid WINDOW_SECONDS, PRESSURE_THRESHOLD, or MIN_TRADES")
@@ -84,4 +90,8 @@ class Config:
             raise ValueError("Invalid endpoint or dashboard port")
         if not (conf.large_trade_min_usdt > 0 and conf.large_trade_min_usdt < 1e12 and 1 <= conf.replay_retention_days <= 90):
             raise ValueError("Invalid LARGE_TRADE_MIN_USDT or REPLAY_RETENTION_DAYS")
+        if not (0 <= conf.discord_cooldown_seconds <= 86400
+                and 1 <= conf.discord_min_factors <= 4
+                and conf.discord_summary_hours in (0, 1, 2, 4, 6, 12, 24)):
+            raise ValueError("Invalid DISCORD_COOLDOWN_SECONDS, DISCORD_MIN_FACTORS, or DISCORD_SUMMARY_HOURS")
         return conf
